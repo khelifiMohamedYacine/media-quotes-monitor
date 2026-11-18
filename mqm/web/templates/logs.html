@@ -1,0 +1,8 @@
+{% extends "base.html" %}{% block body %}<div class="card"><h1>Logs</h1><form method="get">
+<input type="date" name="day" value="{{ f.day }}"><select name="level"><option value="">all levels</option>
+{% for l in ['info','warning','error'] %}<option {{ 'selected' if f.level==l }}>{{ l }}</option>{% endfor %}</select>
+<input name="run_id" value="{{ f.run_id }}" placeholder="run id"><button>Filter</button></form></div>
+<div class="card tablewrap"><table><tr><th>Time (UTC)</th><th>Level</th><th>Event</th><th>Details</th></tr>
+{% for r in recs %}<tr><td class="small">{{ r.ts }}</td><td class="{{ 'bad' if r.level=='error' else 'warn' if r.level=='warning' else 'muted' }}">{{ r.level }}</td>
+<td>{{ r.event }}</td><td class="small"><code>{% for k,v in r.items() if k not in ('ts','level','event') %}{{ k }}={{ v }} {% endfor %}</code></td></tr>{% endfor %}
+</table></div>{% endblock %}

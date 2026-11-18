@@ -1,0 +1,5 @@
+{% extends "base.html" %}{% block body %}<div class="card tablewrap"><h1>LLM calls</h1><table>
+<tr><th>#</th><th>Time</th><th>Purpose</th><th>Model / effort</th><th>In</th><th>Out</th><th>Cache read</th><th>Cost</th><th>Stop</th><th>Error</th></tr>
+{% for c in calls %}<tr><td>{{ c.id }}</td><td class="small">{{ c.created_at }}</td><td>{{ c.purpose }}</td><td class="small">{{ c.model }} / {{ c.effort }}</td>
+<td>{{ c.input_tokens }}</td><td>{{ c.output_tokens }}</td><td>{{ c.cache_read_tokens }}</td><td>${{ c.cost_usd }}</td><td>{{ c.stop_reason or '' }}</td><td class="bad small">{{ c.error or '' }}</td></tr>{% endfor %}
+</table></div>{% endblock %}

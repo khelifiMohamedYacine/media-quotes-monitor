@@ -1,0 +1,13 @@
+anthropic>=0.75
+huggingface_hub>=0.30
+httpx>=0.28
+lxml>=5.3
+trafilatura>=2.0
+python-dateutil>=2.9
+pyyaml>=6.0
+pydantic>=2.9
+fastapi>=0.115
+uvicorn>=0.32
+jinja2>=3.1
+python-multipart>=0.0.12
+markdown>=3.7

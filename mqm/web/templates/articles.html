@@ -1,0 +1,12 @@
+{% extends "base.html" %}{% block body %}<div class="card"><h1>Articles</h1><form method="get">
+<select name="source"><option value="">all sources</option>{% for s in sources %}<option value="{{ s.id }}" {{ 'selected' if f.source==s.id }}>{{ s.name }}</option>{% endfor %}</select>
+<select name="status"><option value="">all statuses</option>{% for s in statuses %}<option {{ 'selected' if f.status==s }}>{{ s }}</option>{% endfor %}</select>
+<button>Filter</button></form></div>
+<div class="card tablewrap"><table><tr><th>Published</th><th>Source</th><th>Headline</th><th>Status</th><th>Quotes</th><th>Found by</th></tr>
+{% for a in items %}<tr><td class="small">{{ (a.published_at or '')[:16] }}</td><td>{{ a.source_id }}</td>
+<td><a href="{{ a.url }}" target="_blank" rel="noopener">{{ a.title or a.url }}</a>{% if a.error %}<div class="small bad">{{ a.error }}</div>{% endif %}</td>
+<td>{{ a.status }}</td><td>{{ a.nq or '' }}</td>
+<td class="small muted">{{ a.discovery_method }}<br>{{ a.relevance_rule }}</td></tr>{% endfor %}</table>
+<p>{% if page > 1 %}<a href="?page={{ page-1 }}&status={{ f.status }}&source={{ f.source }}">← previous</a>{% endif %}
+{% if items|length == 100 %} <a href="?page={{ page+1 }}&status={{ f.status }}&source={{ f.source }}">next →</a>{% endif %}</p></div>
+{% endblock %}

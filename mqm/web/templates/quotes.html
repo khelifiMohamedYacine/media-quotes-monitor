@@ -1,0 +1,16 @@
+{% extends "base.html" %}{% block body %}<div class="card"><h1>Quotes ({{ total }})</h1>
+<form method="get"><input name="q" value="{{ f.q }}" placeholder="search text, headline, speaker">
+<select name="section"><option value="">all sections</option>{% for k,v in sections.items() %}<option value="{{ k }}" {{ 'selected' if f.section==k }}>{{ v }}</option>{% endfor %}</select>
+<select name="source"><option value="">all sources</option>{% for s in sources %}<option value="{{ s.id }}" {{ 'selected' if f.source==s.id }}>{{ s.name }}</option>{% endfor %}</select>
+<input type="date" name="since" value="{{ f.since }}">
+<select name="verified"><option value="1" {{ 'selected' if f.verified=='1' }}>verified</option><option value="0" {{ 'selected' if f.verified=='0' }}>rejected</option><option value="all" {{ 'selected' if f.verified=='all' }}>all</option></select>
+<button>Filter</button> <a class="small" href="/api/export/quotes.jsonl">quotes.jsonl</a> · <a class="small" href="/api/export/context_pack.md">LLM context pack</a></form></div>
+{% for q in items %}<div class="card"><blockquote>{{ q.quote_text }}</blockquote>
+<div class="small">{% if q.speaker %}<b>{{ q.speaker }}</b> · {% endif %}{{ q.source_name }} · {{ q.publication_date[:10] }} ·
+<a href="{{ q.article_url }}" target="_blank" rel="noopener">{{ q.article_name }}</a></div>
+<div class="small muted"><span class="pill">{{ sections.get(q.section_id, q.section_id) }}</span> <span class="pill">{{ q.quote_type }}</span>
+<a href="/quotes/{{ q.quote_id }}">{{ q.quote_id }}</a> {% if not q.verified %}<span class="bad">failed verification</span>{% endif %}</div></div>
+{% endfor %}
+<p>{% if page > 1 %}<a href="?page={{ page-1 }}&q={{ f.q }}&section={{ f.section }}&source={{ f.source }}&since={{ f.since }}&verified={{ f.verified }}">← previous</a>{% endif %}
+{% if page*50 < total %} <a href="?page={{ page+1 }}&q={{ f.q }}&section={{ f.section }}&source={{ f.source }}&since={{ f.since }}&verified={{ f.verified }}">next →</a>{% endif %}</p>
+{% endblock %}

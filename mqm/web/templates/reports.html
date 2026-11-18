@@ -1,0 +1,5 @@
+{% extends "base.html" %}{% block body %}<div class="card tablewrap"><h1>Daily reports</h1><table>
+<tr><th>Date</th><th>Window</th><th>Shown</th><th>Withheld (obsolete/duplicate)</th><th>SHA-256</th></tr>
+{% for r in reports %}{% set s = r.stats_json|fromjson %}<tr><td><a href="/reports/{{ r.report_date }}">{{ r.report_date }}</a> · <a href="/reports/{{ r.report_date }}.md">.md</a></td>
+<td>{{ r.period_start }} to {{ r.period_end }}</td><td>{{ s.shown }}</td><td>{{ s.withheld }}</td><td class="small muted">{{ r.sha256[:16] }}…</td></tr>
+{% else %}<tr><td colspan="5" class="muted">No reports yet.</td></tr>{% endfor %}</table></div>{% endblock %}

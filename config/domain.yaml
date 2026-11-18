@@ -1,0 +1,91 @@
+# Domain definition: deterministic relevance rules + report sections.
+# An article is RELEVANT (deterministic, auditable) when its headline/standfirst/URL slug:
+#   - matches at least one `core` pattern, OR
+#   - matches a `russia` pattern AND a `war_context` pattern,
+#   - and matches none of the `exclude` patterns.
+# Articles found on a source's Ukraine-war topic page are relevant by editorial tag.
+
+relevance:
+  core:
+    - '\bukrain'
+    - '\bkyiv\b'
+    - '\bkiev\b'
+    - '\bzelensk'
+    - '\bdonbas'
+    - '\bcrimea'
+    - '\bkharkiv'
+    - '\bzaporizhzhia'
+    - '\bodesa\b'
+    - '\bkherson'
+    - '\bdonetsk'
+    - '\bluhansk'
+    - '\bpokrovsk'
+    - '\bkursk\b'
+    - '\bdnipro'
+    - '\bsumy\b'
+  russia:
+    - '\brussia'
+    - '\bkremlin\b'
+    - '\bputin'
+    - '\bmoscow\b'
+    - '\bpeskov\b'
+    - '\blavrov\b'
+  war_context:
+    - '\bwar\b'
+    - '\bpeace\b'
+    - '\bceasefire\b'
+    - '\btruce\b'
+    - '\bsanction'
+    - '\bdrone'
+    - '\bmissile'
+    - '\bstrike'
+    - '\battack'
+    - '\bnato\b'
+    - '\btroops?\b'
+    - '\bfront\b'
+    - '\boffensive\b'
+    - '\bweapons?\b'
+    - '\bmilitary\b'
+    - '\btalks\b'
+    - '\bnegotiat'
+    - '\boil\b'
+    - '\bgas\b'
+    - '\bshadow fleet'
+    - '\bfrozen assets'
+    - '\bsabotage'
+    - '\bairspace'
+    - '\bnuclear'
+  exclude:
+    - '\bfootball\b'
+    - '\beurovision\b'
+    - '\bwimbledon\b'
+    - '\bolympic'
+    - '\brecipe'
+    - '\bquiz\b'
+
+sections:
+  - id: war_intensity
+    title: War Intensity and the Battlefield
+    scope: Front-line dynamics, offensives, territorial changes, strikes on cities and infrastructure, drone and missile campaigns, casualties.
+  - id: peace_initiatives
+    title: Peace Initiatives and Negotiations
+    scope: Ceasefire proposals, peace plans, talks, mediation, conditions set by either side, summits.
+  - id: international_support
+    title: International Support for Ukraine
+    scope: Military, financial and political aid to Ukraine; weapons deliveries; use of frozen Russian assets; EU/NATO accession; shifts in allies' positions.
+  - id: sanctions
+    title: Sanctions and Economic Pressure
+    scope: Sanctions on Russia, enforcement, shadow fleet, oil price caps, energy revenues, secondary sanctions, trade restrictions.
+  - id: resources
+    title: Conflicting Parties' Resources
+    scope: Manpower, mobilisation, defence-industrial output, budgets, economic resilience, energy supply and foreign suppliers (e.g. North Korea, Iran, China) of either side.
+  - id: escalation
+    title: Escalation Risks and Regional Security
+    scope: Spill-over to NATO countries, airspace violations, sabotage, hybrid attacks, nuclear signalling, involvement of third countries.
+  - id: humanitarian
+    title: Humanitarian and Civilian Impact
+    scope: Civilian casualties, displacement, power and heating outages, prisoners of war, deported children, war crimes investigations.
+
+report:
+  window_days: 14
+  max_quotes_per_section: 8

@@ -1,0 +1,27 @@
+{% extends "base.html" %}{% block body %}<div class="card"><h1>{{ q.quote_id }}</h1>
+<blockquote>{{ q.quote_text }}</blockquote>
+<table>
+<tr><th>Source</th><td>{{ q.source_name }} ({{ q.source_id }})</td></tr>
+<tr><th>Article</th><td><a href="{{ q.article_url }}" target="_blank" rel="noopener">{{ q.article_name }}</a></td></tr>
+<tr><th>Published</th><td>{{ q.publication_date }}</td></tr><tr><th>Extracted</th><td>{{ q.extraction_date }}</td></tr>
+<tr><th>Speaker</th><td>{{ q.speaker or '-' }}</td></tr><tr><th>Type</th><td>{{ q.quote_type }}</td></tr>
+<tr><th>Section</th><td>{{ sections.get(q.section_id, q.section_id) }}</td></tr>
+<tr><th>Sentence span</th><td>{{ q.span_start }} → {{ q.span_end }}</td></tr>
+<tr><th>Topic key</th><td>{{ q.topic_key }}</td></tr>
+<tr><th>Key facts (LLM paraphrase)</th><td>{% for k in q.key_facts_json|fromjson %}• {{ k }}<br>{% endfor %}</td></tr>
+<tr><th>Why material (LLM)</th><td>{{ q.relevance_rationale }}</td></tr>
+<tr><th>Text SHA-256</th><td class="small">{{ q.text_sha256 }}</td></tr>
+<tr><th>Run</th><td><a href="/logs?run_id={{ q.run_id }}">{{ q.run_id }}</a></td></tr>
+</table></div>
+<div class="card"><h2>Deterministic verification</h2>{% set v = q.verification_json|fromjson %}
+<p class="{{ 'ok' if v.passed else 'bad' }}"><b>{{ 'PASSED' if v.passed else 'FAILED' }}</b></p>
+<table>{% for k, ok in v.checks.items() %}<tr><td>{{ k }}</td><td class="{{ 'ok' if ok else 'bad' }}">{{ 'yes' if ok else 'no' }}</td></tr>{% endfor %}</table></div>
+<div class="card"><h2>Provenance</h2><table>
+<tr><th>Article status</th><td>{{ art.status }}</td></tr><tr><th>Discovered by</th><td>{{ art.discovery_method }} ({{ art.relevance_rule }})</td></tr>
+<tr><th>Fetched</th><td>{{ art.fetched_at }}</td></tr><tr><th>Raw HTML snapshot</th><td class="small">data/snapshots/{{ art.snapshot_sha256 }}.html.gz</td></tr>
+{% if call %}<tr><th>LLM call</th><td>#{{ call.id }} · {{ call.model }} · effort {{ call.effort }} · {{ call.input_tokens }}/{{ call.output_tokens }} tokens · ${{ call.cost_usd }}</td></tr>{% endif %}
+</table></div>
+<div class="card"><h2>Report history</h2><table><tr><th>Report</th><th>Status</th><th>Superseded by</th><th>Reason (LLM)</th></tr>
+{% for h in hist %}<tr><td>{{ h.report_date }}</td><td>{{ h.status }}</td><td>{% if h.superseded_by %}<a href="/quotes/{{ h.superseded_by }}">{{ h.superseded_by }}</a>{% endif %}</td><td>{{ h.reason }}</td></tr>
+{% else %}<tr><td colspan="4" class="muted">Not yet in a report.</td></tr>{% endfor %}</table></div>
+{% endblock %}

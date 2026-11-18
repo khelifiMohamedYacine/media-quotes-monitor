@@ -1,0 +1,75 @@
+# Source registry. Every source is processed by the same deterministic pipeline:
+#   discover -> relevance rules -> fetch -> extract -> (LLM span selection) -> verify -> store
+#
+# access:
+#   open              - robots.txt allows our crawler; pages are fetched and quotes extracted.
+#   detect_only       - the publisher prohibits automated collection (e.g. Reuters robots.txt notice).
+#                       Nothing is crawled. Articles enter the pipeline only from pages a licensed
+#                       reader saves into ./inbox, or from a licensed feed once one is configured;
+#                       from there the same extraction + verification applies.
+#
+# discovery methods (all deterministic):
+#   news_sitemap      - Google News sitemap (<news:title>, <news:publication_date>) for the last ~48h
+#   topic_pages       - a topic/tag listing page, paginated; every article on it is in scope by tag
+#   rss               - RSS/Atom feed
+#   licensed_feed     - plug-in point for a licensed publisher feed/API (e.g. Reuters Connect)
+
+sources:
+  - id: bbc
+    name: BBC News
+    domain: bbc.co.uk
+    access: open
+    mandatory: true
+    discovery:
+      - method: news_sitemap
+        url: https://www.bbc.co.uk/sitemaps/https-index-uk-news.xml
+      - method: topic_pages
+        url: https://www.bbc.co.uk/news/topics/c1vw6q14rzqt   # "War in Ukraine" topic
+        max_pages: 60
+      - method: rss
+        url: https://feeds.bbci.co.uk/news/world/europe/rss.xml
+    url_include: ['^https://www\.bbc\.co\.uk/news/(articles/|world-)']
+    url_exclude: ['/news/videos/', '/live/', '/av/', '/sport/', '/newsround/']
+    body_xpath: "//article//div[@data-component='text-block' or @data-testid='rich-text']"
+
+  - id: reuters
+    name: Reuters
+    domain: reuters.com
+    access: detect_only
+    mandatory: true
+    access_note: >-
+      reuters.com/robots.txt: "Collection of content ... through automated means is prohibited
+      unless you have prior written consent from Reuters". The system therefore does not crawl
+      Reuters (nor Google News search, which its robots.txt also disallows). Reuters articles are
+      processed from ./inbox (pages saved by a licensed reader) or a licensed feed.
+    discovery: []
+    url_include: ['^https://www\.reuters\.com/']
+    url_exclude: ['/video/', '/pictures/']
+
+  - id: guardian
+    name: The Guardian
+    domain: theguardian.com
+    access: open
+    mandatory: false
+    discovery:
+      - method: news_sitemap
+        url: https://www.theguardian.com/sitemaps/news.xml
+      - method: rss
+        url: https://www.theguardian.com/world/ukraine/rss
+    url_include: ['^https://www\.theguardian\.com/(world|us-news|politics|business|commentisfree)/20\d\d/']
+    url_exclude: ['/live/', '/video/', '/gallery/', '/audio/']
+    body_xpath: "//div[@id='maincontent']"
+
+  - id: aljazeera
+    name: Al Jazeera
+    domain: aljazeera.com
+    access: open
+    mandatory: false
+    discovery:
+      - method: news_sitemap
+        url: https://www.aljazeera.com/news-sitemap.xml
+      - method: rss
+        url: https://www.aljazeera.com/xml/rss/all.xml
+    url_include: ['^https://www\.aljazeera\.com/(news|features|opinions|economy)/20\d\d/']
+    url_exclude: ['/liveblog/', '/video/', '/gallery/', '/program/']
+    body_xpath: "//div[contains(@class,'wysiwyg')]"
