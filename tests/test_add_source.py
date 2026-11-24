@@ -71,6 +71,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("MQM_DATA", str(tmp_path / "data"))
     monkeypatch.setenv("MQM_REQUEST_DELAY", "0")
     monkeypatch.setenv("MQM_HTTP_RETRIES", "1")
+    for key in ("GROQ_API_KEY", "HF_TOKEN", "ANTHROPIC_API_KEY"):   # behave like CI: no real LLM keys
+        monkeypatch.delenv(key, raising=False)
     for mod in ("mqm.config", "mqm.logs", "mqm.db", "mqm.fetch", "mqm.discovery", "mqm.llm", "mqm.verify",
                 "mqm.quotes", "mqm.pipeline", "mqm.report", "mqm.export"):
         importlib.reload(importlib.import_module(mod))
@@ -322,6 +324,13 @@ def test_add_source_backfills_only_the_new_source(env, monkeypatch):
     assert calls == [(date(2026, 10, 1), date.today(), ["example"], "add_source", None)]
 
 
+class _NoCallLLM:
+    """Stand-in model: the empty feed means no article reaches the LLM step."""
+
+    def json(self, *a, **k):
+        raise AssertionError("no LLM call expected")
+
+
 def test_new_source_runs_through_collect(env, monkeypatch):
     """After registering, a real collect() run picks the source up (no LLM needed: feed is empty)."""
     from datetime import date
@@ -334,7 +343,8 @@ def test_new_source_runs_through_collect(env, monkeypatch):
     env["web"].pages["https://www.example.org/atom.xml"] = (
         200, '<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"/>')
     pipeline.register_source("Example", "https://www.example.org")
-    out = pipeline.collect(date(2026, 11, 1), date(2026, 11, 2), ["example"], "add_source")
+    out = pipeline.collect(date(2026, 11, 1), date(2026, 11, 2), ["example"], "add_source",
+                           llm=_NoCallLLM())
     assert out["status"] in ("ok", "partial"), out
     assert [d["source"] for d in out["detect"]] == ["example"]
     assert out["detect"][0]["candidates"] == 0
