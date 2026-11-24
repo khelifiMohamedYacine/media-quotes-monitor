@@ -33,6 +33,14 @@ class LLMError(Exception):
     pass
 
 
+class LLMRateLimited(LLMError):
+    """Provider asked us to slow down; `wait` is its Retry-After in seconds."""
+
+    def __init__(self, message: str, wait: float):
+        super().__init__(message)
+        self.wait = wait
+
+
 class LLM(Protocol):
     def json(self, purpose: str, system: str, user: str, schema: dict, effort: str,
              max_tokens: int = 16000) -> tuple[dict, int | None]: ...
@@ -61,6 +69,8 @@ def _record(purpose: str, model: str, effort: str, req_sha: str, usage: Any = No
 
 class AnthropicLLM:
     def __init__(self, model: str | None = None):
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise LLMError("ANTHROPIC_API_KEY is not set: add it to .env (console.anthropic.com)")
         self.model = model or SETTINGS.llm.model
         self.client = anthropic.Anthropic(max_retries=4, timeout=600)
 
@@ -154,6 +164,7 @@ class OpenModelLLM:
 
     label = "open model"
     key_env = ""
+    wait_on_rate_limit = True     # False inside a fallback chain: hand over to the next provider instead
 
     def __init__(self, model: str, client):
         self.model, self.client = model, client
@@ -186,6 +197,11 @@ class OpenModelLLM:
                     raise LLMError(f"{self.label} authentication failed: check {self.key_env} ({last_err})") from e
                 if status == 402:
                     raise LLMError(f"{self.label}: inference credits exhausted") from e
+                if status == 429 and not self.wait_on_rate_limit:
+                    hdr = getattr(getattr(e, "response", None), "headers", {}) or {}
+                    wait = str(hdr.get("retry-after", ""))
+                    raise LLMRateLimited(f"{self.label}: rate limited",
+                                         float(wait) if wait.replace(".", "").isdigit() else 30.0) from e
                 if status == 429 and rate_waits < 8:
                     # free tiers limit tokens per minute: wait and retry without using an attempt
                     hdr = getattr(getattr(e, "response", None), "headers", {}) or {}
@@ -243,14 +259,113 @@ class GroqLLM(OpenModelLLM):
         super().__init__(model or os.environ.get("MQM_GROQ_MODEL", "openai/gpt-oss-120b"), client)
 
 
+class OllamaLLM(OpenModelLLM):
+    """A local open-weight model served by Ollama: no API key, no rate limit, no cost."""
+
+    label, key_env = "Ollama (local)", "MQM_OLLAMA_URL"
+
+    def __init__(self, model: str | None = None, base_url: str | None = None):
+        from huggingface_hub import InferenceClient   # OpenAI-compatible client, pointed at Ollama
+        self.base_url = (base_url or os.environ.get("MQM_OLLAMA_URL", "http://127.0.0.1:11434")).rstrip("/")
+        client = InferenceClient(base_url=f"{self.base_url}/v1", api_key="ollama",
+                                 timeout=float(os.environ.get("MQM_OLLAMA_TIMEOUT", "900")))
+        super().__init__(model or os.environ.get("MQM_OLLAMA_MODEL", "qwen3:8b"), client)
+
+    def available(self) -> tuple[bool, str]:
+        """Quick check (2 s) that the Ollama server is up and the model is pulled."""
+        import httpx
+        try:
+            tags = httpx.get(f"{self.base_url}/api/tags", timeout=2).json()
+        except Exception as e:  # noqa: BLE001 - not running / not reachable
+            return False, f"Ollama not reachable at {self.base_url} ({type(e).__name__})"
+        names = {m.get("name", "") for m in tags.get("models", [])}
+        if self.model not in names and f"{self.model}:latest" not in names:
+            return False, f"model {self.model} is not pulled (run: ollama pull {self.model})"
+        return True, ""
+
+
+PROVIDERS = {"ollama": OllamaLLM, "groq": GroqLLM, "huggingface": HuggingFaceLLM, "anthropic": AnthropicLLM}
+DEFAULT_CHAIN = "ollama,groq,huggingface,anthropic"
+
+
+class FallbackLLM:
+    """Tries providers in order (default: local Ollama first, then Groq, Hugging Face, Claude).
+
+    - A provider without a key, or an Ollama server that is not running, is skipped.
+    - Rate limited (429): the provider is paused for its Retry-After and the next one is used at once.
+    - Bad key / no credits: the provider is switched off for the rest of the session.
+    - Any other failure on a call (e.g. no valid JSON): the next provider gets the same call.
+    Every attempt is still recorded in `llm_calls`, so the dashboard shows which model answered."""
+
+    OLLAMA_RECHECK_S = 300
+
+    def __init__(self, chain: str | None = None):
+        self.entries: list[dict] = []
+        for name in (chain or os.environ.get("MQM_LLM_CHAIN", DEFAULT_CHAIN)).split(","):
+            name = name.strip().lower()
+            if name not in PROVIDERS:
+                log("llm.chain_unknown_provider", "warning", provider=name)
+                continue
+            try:
+                inst = PROVIDERS[name]()
+            except Exception as e:  # noqa: BLE001 - missing key / SDK error: skip this provider
+                log("llm.chain_skip", "info", provider=name, reason=str(e)[:200])
+                continue
+            if hasattr(inst, "wait_on_rate_limit"):
+                inst.wait_on_rate_limit = False
+            self.entries.append({"name": name, "llm": inst, "until": 0.0})
+        if not self.entries:
+            raise LLMError("no LLM provider available: start Ollama, or set GROQ_API_KEY / HF_TOKEN / "
+                           "ANTHROPIC_API_KEY in .env")
+        log("llm.chain", providers=[e["name"] for e in self.entries])
+
+    @property
+    def providers(self) -> list[str]:
+        return [e["name"] for e in self.entries]
+
+    def _ready(self, entry: dict) -> bool:
+        if time.time() < entry["until"]:
+            return False
+        # local providers expose a cheap availability probe (Ollama: is the server up, is the model pulled)
+        if hasattr(entry["llm"], "available") and time.time() - entry.get("checked", 0.0) > 60:
+            ok, why = entry["llm"].available()
+            if not ok:
+                entry["until"] = time.time() + self.OLLAMA_RECHECK_S
+                log("llm.provider_unavailable", "warning", provider=entry["name"], reason=why)
+                return False
+            entry["checked"] = time.time()
+        return True
+
+    def json(self, purpose: str, system: str, user: str, schema: dict, effort: str,
+             max_tokens: int = 16000) -> tuple[dict, int | None]:
+        errors: list[str] = []
+        for entry in self.entries:
+            if not self._ready(entry):
+                continue
+            try:
+                return entry["llm"].json(purpose, system, user, schema, effort, max_tokens)
+            except LLMRateLimited as e:
+                entry["until"] = time.time() + e.wait
+                log("llm.rate_limited", "info", provider=entry["name"], cooldown_s=round(e.wait, 1), purpose=purpose)
+                errors.append(f"{entry['name']}: rate limited")
+            except LLMError as e:
+                msg = str(e)
+                if "authentication" in msg or "credits" in msg:
+                    entry["until"] = float("inf")          # will not fix itself this session
+                log("llm.provider_failed", "warning", provider=entry["name"], error=msg[:300], purpose=purpose)
+                errors.append(f"{entry['name']}: {msg[:120]}")
+        raise LLMError("all LLM providers failed or unavailable: " + ("; ".join(errors) or "none ready"))
+
+
 _default: LLM | None = None
 
 
 def default_llm() -> LLM:
+    """MQM_LLM_PROVIDER=auto (default) uses the fallback chain; a provider name uses that one only."""
     global _default
     if _default is None:
-        provider = os.environ.get("MQM_LLM_PROVIDER", "groq").lower()
-        _default = {"anthropic": AnthropicLLM, "huggingface": HuggingFaceLLM}.get(provider, GroqLLM)()
+        provider = os.environ.get("MQM_LLM_PROVIDER", "auto").lower()
+        _default = PROVIDERS[provider]() if provider in PROVIDERS else FallbackLLM()
     return _default
 
 
