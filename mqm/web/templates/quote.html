@@ -23,7 +23,7 @@
  <tr><th>Speaker</th><td>{{ q.speaker or '–' }}</td></tr>
  <tr><th>Sentence span</th><td><code>{{ q.span_start }} → {{ q.span_end }}</code></td></tr>
  <tr><th>Topic key</th><td><code>{{ q.topic_key }}</code></td></tr>
- <tr><th>Key facts</th><td>{% for k in q.key_facts_json|fromjson %}<div>• {{ k }}</div>{% endfor %}<div class="small muted">LLM paraphrase</div></td></tr>
+ <tr><th>Key facts</th><td>{% for k in q.key_facts_json|fromjson %}<div>• {{ k }}</div>{% else %}<div class="muted">None kept{% if v.adjustments %} (see Corrections){% endif %}</div>{% endfor %}<div class="small muted">LLM paraphrase, checked against the quote</div></td></tr>
  <tr><th>Why material</th><td>{{ q.relevance_rationale }}<div class="small muted">LLM rationale</div></td></tr>
  <tr><th>Text SHA-256</th><td class="small"><code>{{ q.text_sha256 }}</code></td></tr>
  <tr><th>Run</th><td><a href="/logs?run_id={{ q.run_id }}"><code>{{ q.run_id }}</code></a></td></tr>
@@ -32,8 +32,17 @@
 <div>
 <section class="section">
  <div class="section-head"><h2>Verification</h2><span class="aside">deterministic, no LLM</span></div>
- <div class="card" style="padding:8px 14px"><table class="kv"><tbody>{% for k, ok in v.checks.items() %}<tr><td>{{ k|replace('_', ' ')|capitalize }}</td><td class="n">{% if ok %}<span class="badge b-ok">pass</span>{% else %}<span class="badge b-bad">fail</span>{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+ <div class="card" style="padding:8px 14px"><table class="kv"><tbody>{% for k, ok in v.checks.items() %}<tr><td title="{{ check_help.get(k, '') }}">{{ k|replace('_', ' ')|capitalize }}</td><td class="n">{% if ok %}<span class="badge b-ok">pass</span>{% else %}<span class="badge b-bad">fail</span>{% endif %}</td></tr>{% endfor %}</tbody></table>
+ {% if v.reverified_at %}<p class="small muted" style="margin:6px 0 4px">Re-checked from the raw page snapshot on {{ v.reverified_at[:16]|replace('T', ' ') }} UTC.</p>{% endif %}</div>
 </section>
+{% if v.adjustments %}
+<section class="section">
+ <div class="section-head"><h2>Corrections</h2><span class="aside">LLM output removed by rule</span></div>
+ <div class="card" style="padding:8px 14px"><table class="kv"><tbody>
+ {% for a in v.adjustments %}<tr><th>{{ a.field|replace('_', ' ') }}</th><td><s class="muted">{{ a.value }}</s><div class="small">{{ a.reason|capitalize }}.</div></td></tr>{% endfor %}
+ </tbody></table></div>
+</section>
+{% endif %}
 <section class="section">
  <div class="section-head"><h2>Provenance</h2></div>
  <div class="card" style="padding:8px 14px"><table class="kv"><tbody>

@@ -76,6 +76,7 @@
   <form class="inline" method="post" action="/run/daily"><button{% if job %} disabled{% endif %}>Run daily check + report</button></form>
   <form class="inline" method="post" action="/run/report"><button class="secondary"{% if job %} disabled{% endif %}>Rebuild today’s report</button></form>
   <form class="inline" method="post" action="/run/import-inbox"><button class="secondary"{% if job %} disabled{% endif %}>Import ./inbox pages</button></form>
+  <form class="inline" method="post" action="/run/audit"><button class="secondary"{% if job %} disabled{% endif %} title="Re-read every saved page and re-run all verification checks and field rules">Re-check all quotes</button></form>
  </div>
  <hr>
  <form method="post" action="/run/backfill">

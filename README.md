@@ -13,6 +13,7 @@ only used for judgement, and never writes text that ends up presented as a quote
 - [How it works](#how-it-works)
 - [Deterministic vs probabilistic: the split](#deterministic-vs-probabilistic-the-split)
 - [Anti-hallucination: how quotes stay verbatim](#anti-hallucination-how-quotes-stay-verbatim)
+  - [Beyond verbatim: the story's own text, and fields the model writes](#beyond-verbatim-the-storys-own-text-and-fields-the-model-writes)
 - [Obsolete quotes](#obsolete-quotes)
 - [Sources and access policy (Reuters)](#sources-and-access-policy-reuters)
 - [Database and LLM-ready storage](#database-and-llm-ready-storage)
@@ -68,7 +69,7 @@ flowchart LR
 - Whether an older quote's facts are *superseded* by a newer quote.
 - The short inference under each section heading. It is labelled as machine-generated in the report.
 
-Every LLM call (open-weight model via Groq by default, Hugging Face or Claude) is recorded in `llm_calls` (model, effort, tokens, cost, full JSON response), and each
+Every LLM call (local Ollama model first, then Groq, Hugging Face or Claude as fallbacks) is recorded in `llm_calls` (model, effort, tokens, cost, full JSON response), and each
 quote links to the call that selected it.
 
 ## Anti-hallucination: how quotes stay verbatim
@@ -86,6 +87,27 @@ quote links to the call that selected it.
 5. The result of every check is stored on the quote (`verification_json`). Only `verified=1`
    quotes reach reports and exports. `python -m mqm audit` re-runs all checks against the snapshots.
 6. The report writer copies `quote_text` byte-for-byte and asserts it appears unchanged in the file.
+
+### Beyond verbatim: the story's own text, and fields the model writes
+
+Verbatim matching proves a quote is *on the page*. Two further failure modes were found by
+auditing 954 stored quotes, and each is now closed by a general, rule-based safeguard
+(`mqm/grounding.py`), with no per-site or per-quote exceptions:
+
+| Failure found in the audit | Safeguard |
+|---|---|
+| A site marked every item of its "latest news" feed as its own `<article>`; all were read as one story, so other stories' sentences became quotes filed under the wrong headline (39% of that source's quotes). | **Main-story extraction**: when a page has several `<article>`/`<main>` candidates, only the one carrying the story's paragraph text is read; story cards nested inside it are skipped. |
+| Feeds, promotions and summaries a site repeats on many pages. | **Site template detection**: a sentence that appears on 3+ pages of the same source is template, not story. It is hidden from the model, a quote range through it is rejected, and the `belongs_to_story` check fails any quote containing it. (Threshold measured on the data: legitimate reuse, e.g. a daily briefing repeating a line, stays at 2 pages.) |
+| Key facts with numbers the quote does not contain: an invented "62%", "next year" converted to the wrong year, "nearly 30" turned into "29", a weekday turned into a date, figures taken from elsewhere on the page. | **Key-fact grounding**: every number in a key fact (digits or words, including years) must appear in the quote; otherwise the fact is removed. The prompt also asks for relative time and approximations to be kept as written. |
+| The publication or a placeholder ("General context") given as the speaker. | **Speaker grounding**: the outlet itself, placeholder labels, and names/roles found nowhere in the article are cleared. |
+
+Nothing is silently changed: every removed value is kept on the quote with its reason
+(`verification_json.adjustments`) and shown under **Corrections** on the quote's page, next to
+each check's pass/fail and what it means. `python -m mqm audit` reports what the current rules
+would change, `--apply` stores it (quotes that fail are marked unverified, never deleted), and the
+dashboard's **Re-check all quotes** button does the same in the background, so rules added later
+apply to all existing data, re-read from the raw page snapshots. Section choice and "why material"
+remain model judgements; they are labelled as such and never alter the verbatim text.
 
 ## Obsolete quotes
 
@@ -201,7 +223,10 @@ Exports for LLM contextualisation (`python -m mqm export`, also from the dashboa
   explainer. Errors appear next to the form and keep what was typed (see
   [Adding a media / think-tank source](#adding-a-media--think-tank-source)).
 - **Run controls:** daily check + report; rebuild report; **collect any past period** (for example
-  2026-08-01 to 2026-09-30, per source or all); import the inbox. Buttons are disabled while a job runs.
+  2026-08-01 to 2026-09-30, per source or all); import the inbox; **re-check all quotes** against
+  their saved pages with the current rules. Buttons are disabled while a job runs.
+- **Quote page:** each verification check with what it means, and a **Corrections** panel listing any
+  model output that was removed by rule, with the reason.
 - **Reports:** every daily Markdown file, rendered or as a download, with its SHA-256.
 - **Quotes:** search and filter. Each quote page shows all verification checks, its provenance
   (snapshot, LLM call, run) and its history across reports.
@@ -212,7 +237,8 @@ Exports for LLM contextualisation (`python -m mqm export`, also from the dashboa
 ```bash
 python -m venv .venv && .venv/Scripts/activate      # Windows; use bin/activate on macOS/Linux
 pip install -r requirements.txt
-cp .env.example .env                                  # add GROQ_API_KEY (or HF_TOKEN / ANTHROPIC_API_KEY)
+cp .env.example .env                                  # optional fallbacks: GROQ_API_KEY / HF_TOKEN / ANTHROPIC_API_KEY
+ollama pull qwen3:8b                                  # local model, used first (https://ollama.com)
 python -m mqm init
 python -m mqm backfill --from 2026-10-01              # initial collection from 1 October 2026
 python -m mqm daily                                   # daily: detect + extract + report + export
@@ -229,8 +255,12 @@ On Windows, if `python` is not on the PATH, use the launcher instead: `py -m mqm
 verification, relevance rules and the report with a scripted LLM. `tests/test_add_source.py` covers
 adding a source against a simulated website: feed detection, validation and duplicates, inbox-only
 registration, sitemap-index limits, the dashboard form (success, errors, refilled fields, job status),
-and a render check of every page. Tests write only to temporary folders: the add-source tests use a
-temporary copy of `config/`, so the real `sources.yaml` is never modified.
+and a render check of every page. `tests/test_grounding.py` covers the trust rules above with the
+real failure cases from the audit (main-story extraction on a page with a news feed, site template
+detection, key-fact and speaker grounding, the audit's dry run and `--apply`, and the Corrections
+panel). `tests/test_llm_chain.py` covers the LLM fallback chain. Tests write only to temporary
+folders: the add-source tests use a temporary copy of `config/`, so the real `sources.yaml` is never
+modified.
 
 **Daily schedule.** The daily run looks back 2 days, so a missed day heals itself.
 - Windows: `schtasks /Create /SC DAILY /ST 07:00 /TN mqm-daily /TR "C:\path\.venv\Scripts\python.exe -m mqm daily"`
@@ -241,11 +271,21 @@ temporary copy of `config/`, so the real `sources.yaml` is never modified.
 - Deterministic relevance rules filter before any LLM call. Off-topic articles (sport, culture) are
   dropped for free, and articles older than the period are dropped after fetching, with no LLM call.
 - The model returns **ids, not text**, so output tokens per article are small.
-- **Open-weight model by default, on a free tier:** an open-weight model served by Groq
-  (`MQM_LLM_PROVIDER=groq`, model set by `MQM_GROQ_MODEL`). Hugging Face Inference Providers
-  (`huggingface`, e.g. Qwen3-235B) and Claude (`anthropic`) are one-line switches.
+- **Local model first, with automatic fallback** (`MQM_LLM_PROVIDER=auto`, the default). Calls go
+  through a chain, in the order of `MQM_LLM_CHAIN` (default `ollama,groq,huggingface,anthropic`):
+  1. **Ollama**, an open-weight model on the same machine (`MQM_OLLAMA_MODEL`, default `qwen3:8b`):
+     no API key, no rate limit, no cost.
+  2. **Groq** free tier (`GROQ_API_KEY`, `MQM_GROQ_MODEL`), 3. **Hugging Face** Inference Providers
+     (`HF_TOKEN`), 4. **Claude** (`ANTHROPIC_API_KEY`).
+
+  Providers without a key are left out. Ollama is checked with a 2-second probe, so a host without
+  it (for example a cloud deployment) skips it immediately and rechecks every 5 minutes. A provider that
+  returns HTTP 429 is paused for its `Retry-After` while the next one answers; a bad key or exhausted
+  credits switches it off for the session; any other failure hands the same call to the next provider.
+  `MQM_LLM_PROVIDER=ollama|groq|huggingface|anthropic` forces a single provider.
   All of them sit behind the `LLM` protocol in `mqm/llm.py`, so models can be benchmarked against the same
-  deterministic verification checks: the checks, not the model, decide what is stored.
+  deterministic verification checks: the checks, not the model, decide what is stored, and every call
+  in `llm_calls` records which model answered.
 - Structured output: JSON-schema mode where the provider supports it. The schema is always
   re-validated in code, and invalid output triggers a self-repair retry that shows the model the
   exact validation errors.

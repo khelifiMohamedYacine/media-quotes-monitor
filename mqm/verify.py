@@ -29,7 +29,9 @@ def article_plain(blocks: list[Block]) -> str:
 
 
 def verify_quote(q: dict, blocks: list[Block], source: dict, period_start: str | None = None,
-                 snapshot_blocks: list[Block] | None = None) -> dict:
+                 snapshot_blocks: list[Block] | None = None, template=None) -> dict:
+    """`template` (grounding.SiteTemplate) adds the check that the quote is part of the story and
+    not text the site repeats on many pages (feeds, promos, other stories' summaries)."""
     checks: dict[str, bool] = {}
     text = q.get("quote_plain", "")
     host = urlparse(q.get("article_url", "")).netloc.lower()
@@ -50,4 +52,6 @@ def verify_quote(q: dict, blocks: list[Block], source: dict, period_start: str |
         (host == source["domain"] or host.endswith("." + source["domain"]))
     if period_start:
         checks["in_period"] = q.get("publication_date", "") >= period_start
+    if template is not None:
+        checks["belongs_to_story"] = not template.contains_template(text, q.get("article_id"))
     return {"passed": all(checks.values()), "checks": checks}

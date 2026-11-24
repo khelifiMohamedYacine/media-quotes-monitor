@@ -32,7 +32,8 @@ def main(argv: list[str] | None = None) -> None:
     a.add_argument("--no-backfill", action="store_true")
     sub.add_parser("import-inbox", help="process saved article pages in ./inbox")
     sub.add_parser("export", help="write quotes.jsonl and context_pack.md")
-    sub.add_parser("audit", help="re-verify all quotes against stored snapshots")
+    au = sub.add_parser("audit", help="re-verify all quotes against stored snapshots")
+    au.add_argument("--apply", action="store_true", help="store the results (mark failing quotes unverified)")
     s = sub.add_parser("serve", help="run the dashboard")
     # Hosting platforms (e.g. Render) set PORT and need the server to listen on all interfaces.
     s.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
@@ -61,7 +62,7 @@ def main(argv: list[str] | None = None) -> None:
     elif args.cmd == "export":
         out = export.export_all()
     elif args.cmd == "audit":
-        out = export.audit_integrity()
+        out = export.audit_integrity(apply=args.apply)
     elif args.cmd == "serve":
         import uvicorn
         uvicorn.run("mqm.web.app:app", host=args.host, port=args.port)

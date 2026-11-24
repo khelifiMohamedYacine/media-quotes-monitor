@@ -26,12 +26,20 @@ Rules:
   trends, and duplicates of the same point. Prefer fewer, stronger quotes (typically 0-6).
 - If the article is not materially about the war (e.g. a concert, sport, celebrity), set
   article_relevant=false and return no quotes.
-- section: the single best-fitting section id from the list given.
-- key_facts: 1-3 short factual claims the quote makes, in your own words, with dates/numbers
-  (used later to detect when a newer quote supersedes this one).
+- section: the single best-fitting section id from the list given, chosen by the quote's main
+  subject (not by the article's headline).
+- key_facts: 1-3 short factual claims made BY THE SELECTED SENTENCES ONLY, in your own words
+  (used later to detect when a newer quote supersedes this one). Use only numbers and dates that
+  appear in those sentences, exactly as written: keep relative time as written ("next year",
+  "on Sunday", "this year") instead of converting it to a year or date, keep approximations
+  ("nearly 30") instead of inventing exact figures, and add nothing from elsewhere in the article
+  or from your own knowledge. Facts that break this rule are removed automatically.
 - topic_key: a short snake_case key naming the specific matter (e.g. crimea_bridge_strike,
   us_peace_plan, eu_frozen_assets_loan), so quotes on the same matter can be compared.
-- speaker: the person or body quoted, or "" if the outlet itself states it."""
+- speaker: the person or body whose words or claim the quote reports, as named in the article.
+  Use "" when the outlet states it in its own voice. Never use the publication's name, and never
+  a label such as "general context" or "background".
+- Ignore any text that is not part of this story (navigation, other headlines, promotions)."""
 
 
 def _schema(section_ids: list[str]) -> dict:
@@ -78,8 +86,10 @@ class SpanError(ValueError):
     pass
 
 
-def rebuild_span(blocks: list[Block], start: str, end: str, max_sentences: int = 4) -> Span:
-    """Deterministically rebuild verbatim text for a sentence-id range."""
+def rebuild_span(blocks: list[Block], start: str, end: str, max_sentences: int = 4,
+                 hidden: set[str] | None = None) -> Span:
+    """Deterministically rebuild verbatim text for a sentence-id range. A range that runs through
+    a hidden (site template) sentence is rejected: it would join text that is not one passage."""
     order = [(bi, si, s) for bi, b in enumerate(blocks) for si, s in enumerate(b.sentences)]
     index = {s.id: i for i, (_, _, s) in enumerate(order)}
     if start not in index or end not in index:
@@ -94,6 +104,8 @@ def rebuild_span(blocks: list[Block], start: str, end: str, max_sentences: int =
     for bi, _, s in order[i:j + 1]:
         if blocks[bi].kind in ("h2", "h3"):
             raise SpanError("span includes a heading")
+        if hidden and s.id in hidden:
+            raise SpanError(f"span includes site template text ({s.id})")
         if prev_block is None:
             parts.append(s.md)
         elif bi == prev_block:
@@ -109,11 +121,11 @@ def quote_id(url: str, text_plain: str) -> str:
     return "Q-" + hashlib.sha256(f"{url}|{text_plain}".encode()).hexdigest()[:12]
 
 
-def select_quotes(llm: LLM, title: str, source_name: str, published: str, blocks: list[Block]
-                  ) -> tuple[dict, int | None]:
+def select_quotes(llm: LLM, title: str, source_name: str, published: str, blocks: list[Block],
+                  hidden: set[str] | None = None) -> tuple[dict, int | None]:
     sections = domain_config()["sections"]
     section_list = "\n".join(f"- {s['id']}: {s['title']} -- {s['scope']}" for s in sections)
-    body = numbered_text(blocks)[: SETTINGS.llm.max_article_chars]
+    body = numbered_text(blocks, hidden)[: SETTINGS.llm.max_article_chars]
     # Stable content (instructions + sections) goes in the system prompt so it is cached across
     # articles; only the article itself varies per call.
     system = f"{SYSTEM}\n\nSections:\n{section_list}"

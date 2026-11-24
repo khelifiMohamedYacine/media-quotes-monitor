@@ -162,6 +162,24 @@ def _number(raw_blocks: list[tuple[str, str]]) -> list[Block]:
     return blocks
 
 
+def _paragraph_chars(el) -> int:
+    return sum(len(" ".join(p.text_content().split())) for p in el.iter("p") if not p.xpath(EXCLUDED_ANCESTORS))
+
+
+def main_container(doc) -> list:
+    """The element holding the story itself when no site-specific body XPath is configured.
+
+    News pages often mark up every item of a "latest news" feed or related-stories rail as its own
+    <article>. Reading all of them would mix other stories into this one, so when there are several
+    candidates only the one carrying the most paragraph text is used (the story, not the feed)."""
+    for xp in ("//article", "//main"):
+        candidates = doc.xpath(xp)
+        if candidates:
+            best = max(candidates, key=_paragraph_chars)
+            return [best] if _paragraph_chars(best) else []
+    return []
+
+
 def extract(page_html: str, url: str, body_xpath: str | None = None) -> Article:
     doc = html.fromstring(page_html)
     ld = _jsonld(doc)
@@ -179,10 +197,13 @@ def extract(page_html: str, url: str, body_xpath: str | None = None) -> Article:
     raw: list[tuple[str, str]] = []
     containers = doc.xpath(body_xpath) if body_xpath else []
     if not containers:
-        containers = doc.xpath("//article") or doc.xpath("//main") or []
+        containers = main_container(doc)
     for c in containers:
+        nested = set(c.iterdescendants("article"))      # embedded story cards inside the story
         for el in c.iter(*BLOCK_TAGS):
             if el.xpath(EXCLUDED_ANCESTORS):
+                continue
+            if nested and any(a in nested for a in el.iterancestors("article")):
                 continue
             if el.tag == "p" and el.xpath("ancestor::blockquote|ancestor::li"):
                 continue
@@ -214,12 +235,17 @@ def blocks_from_json(body_json: str) -> list[Block]:
             for b in json.loads(body_json)]
 
 
-def numbered_text(blocks: list[Block]) -> str:
-    """The view given to the LLM: every sentence prefixed with its id."""
+def numbered_text(blocks: list[Block], hidden: set[str] | None = None) -> str:
+    """The view given to the LLM: every sentence prefixed with its id. Sentence ids in `hidden`
+    (site template text such as feeds and promos) are left out, so they cannot be selected."""
+    hidden = hidden or set()
     lines = []
     for b in blocks:
         if b.kind in ("h2", "h3"):
-            lines.append(f"[{b.sentences[0].id}] ## {plain(b.md)}")
+            if b.sentences[0].id not in hidden:
+                lines.append(f"[{b.sentences[0].id}] ## {plain(b.md)}")
         else:
-            lines.append(" ".join(f"[{s.id}] {plain(s.md)}" for s in b.sentences))
+            line = " ".join(f"[{s.id}] {plain(s.md)}" for s in b.sentences if s.id not in hidden)
+            if line:
+                lines.append(line)
     return "\n".join(lines)

@@ -8,13 +8,14 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import discovery, fetch, relevance
+from .grounding import SiteTemplate, ground_fields
 from .config import DEFAULT_START, INBOX_DIR, append_source_config, get_source, sources_config
 from .db import dumps, init_db, one, rows, session
 from .extract import Article, blocks_from_json, extract
 from .llm import LLM, LLMError, default_llm
 from .logs import log, new_run_id, now_iso
 from .quotes import SpanError, quote_id, rebuild_span, select_quotes
-from .verify import verify_quote
+from .verify import article_plain, verify_quote
 
 MAX_ATTEMPTS = 3
 
@@ -78,12 +79,22 @@ def detect(source: dict, day_from: date, day_to: date, run_id: str) -> dict:
 
 
 # --------------------------------------------------------------------------- processing
+def source_template(source_id: str) -> SiteTemplate:
+    """Sentences of every stored article of a source, to recognise text the site repeats on many
+    pages (feeds, promotions, other stories' summaries)."""
+    with session() as c:
+        bodies = rows(c, "SELECT id, body_json FROM articles WHERE source_id=? AND body_json IS NOT NULL", source_id)
+    return SiteTemplate({r["id"]: blocks_from_json(r["body_json"]) for r in bodies})
+
+
 def _store_quotes(c, art: dict, source: dict, a: Article, picks: dict, call_id: int | None,
-                  period_start: str, snapshot_blocks, run_id: str) -> tuple[int, int]:
+                  period_start: str, snapshot_blocks, run_id: str, template: SiteTemplate | None = None,
+                  hidden: set[str] | None = None) -> tuple[int, int]:
     stored = rejected = 0
+    article_text = article_plain(a.blocks)
     for p in picks.get("quotes", []):
         try:
-            span = rebuild_span(a.blocks, p["start"], p["end"])
+            span = rebuild_span(a.blocks, p["start"], p["end"], hidden=hidden)
         except SpanError as e:
             rejected += 1
             log("quote.rejected", "warning", url=art["url"], span=f"{p['start']}-{p['end']}", reason=str(e))
@@ -98,7 +109,12 @@ def _store_quotes(c, art: dict, source: dict, a: Article, picks: dict, call_id: 
             "key_facts_json": dumps(p.get("key_facts", [])), "topic_key": p.get("topic_key", ""),
             "relevance_rationale": p.get("why_material", ""),
         }
-        v = verify_quote(q, a.blocks, source, period_start, snapshot_blocks)
+        # LLM-written fields must be supported by the quote/article; unsupported values are removed
+        adjustments = ground_fields(q, article_text, source)
+        v = verify_quote(q, a.blocks, source, period_start, snapshot_blocks, template)
+        if adjustments:
+            v["adjustments"] = adjustments
+            log("quote.fields_adjusted", quote_id=q["quote_id"], adjustments=adjustments)
         q.update(text_sha256=hashlib.sha256(span.text_plain.encode()).hexdigest(),
                  verification_json=dumps(v), verified=int(v["passed"]), llm_call_id=call_id, run_id=run_id)
         cols = ",".join(q)
@@ -113,7 +129,7 @@ def _store_quotes(c, art: dict, source: dict, a: Article, picks: dict, call_id: 
 
 
 def process_article(art: dict, source: dict, llm: LLM, period_start: str, run_id: str,
-                    page_html: str | None = None) -> str:
+                    page_html: str | None = None, template: SiteTemplate | None = None) -> str:
     """Fetch (or use given HTML), extract, select quotes with the LLM, verify, store."""
     try:
         if page_html is None:
@@ -146,11 +162,18 @@ def process_article(art: dict, source: dict, llm: LLM, period_start: str, run_id
         if not a.blocks:
             raise ValueError("no body text extracted")
 
-        picks, call_id = select_quotes(llm, a.title, source["name"], a.published_at, a.blocks)
+        if template is None:
+            template = source_template(source["id"])
+        template.add(art["id"], a.blocks)
+        hidden = template.template_ids(a.blocks, art["id"])   # site template text: never quotable
+        if hidden:
+            log("article.template_hidden", url=art["url"], sentences=len(hidden))
+        picks, call_id = select_quotes(llm, a.title, source["name"], a.published_at, a.blocks, hidden)
         # independent re-extraction from the stored snapshot, used by verification
         snap_blocks = extract(fetch.load_snapshot(sha), art["url"], source.get("body_xpath")).blocks
         with session() as c:
-            stored, rejected = _store_quotes(c, art, source, a, picks, call_id, period_start, snap_blocks, run_id)
+            stored, rejected = _store_quotes(c, art, source, a, picks, call_id, period_start, snap_blocks, run_id,
+                                             template, hidden)
             status = "extracted" if stored else ("irrelevant" if not picks.get("article_relevant") else "no_quotes")
             c.execute("UPDATE articles SET status=?, processed_at=?, llm_call_id=?, error=NULL, run_id=? "
                       "WHERE id=?", (status, now_iso(), call_id, run_id, art["id"]))
@@ -191,8 +214,9 @@ def process_pending(source: dict, period_start: str, run_id: str, llm: LLM | Non
                           "AND (published_at IS NULL OR published_at>=?) ORDER BY published_at DESC NULLS LAST, id",
                        source["id"], MAX_ATTEMPTS, period_start)
     counts: dict[str, int] = {}
+    template = source_template(source["id"]) if pending else None
     for art in pending[:limit]:
-        s = process_article(art, source, llm, period_start, run_id)
+        s = process_article(art, source, llm, period_start, run_id, template=template)
         counts[s] = counts.get(s, 0) + 1
     return {"source": source["id"], "processed": sum(counts.values()), **counts}
 

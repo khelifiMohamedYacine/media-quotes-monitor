@@ -172,6 +172,28 @@ def _added_message(entry: dict) -> str:
     return msg
 
 
+@app.post("/run/audit")
+def run_audit():
+    ok = _run_job("re-check all quotes", export.audit_integrity, apply=True)
+    return RedirectResponse(f"/?msg={'Re-checking every quote against its saved page' if ok else 'A job is already running'}",
+                            303)
+
+
+# What each deterministic check means (shown on the quote page)
+CHECK_HELP = {
+    "verbatim_in_article": "The exact text is in the extracted article body.",
+    "verbatim_in_snapshot": "The exact text is found again when the saved raw page is re-read independently.",
+    "belongs_to_story": "The text is part of this story, not a feed, promotion or summary the site repeats on many pages.",
+    "length_ok": "Between 40 and 1,500 characters.",
+    "no_boilerplate": "Not navigation, captions or promotional text.",
+    "complete_sentence_end": "Ends at a sentence boundary.",
+    "metadata_complete": "Source, dates, headline, link and section are all present.",
+    "dates_valid": "Publication date is valid and not after the extraction date.",
+    "url_matches_source": "The article link belongs to the source's own domain.",
+    "in_period": "Published inside the collection period.",
+}
+
+
 @app.post("/run/import-inbox")
 def run_import():
     ok = _run_job("import inbox", pipeline.import_inbox)
@@ -238,7 +260,8 @@ def quote_detail(request: Request, quote_id: str):
         call = one(c, "SELECT * FROM llm_calls WHERE id=?", qrow["llm_call_id"]) if qrow["llm_call_id"] else None
         hist = rows(c, "SELECT * FROM assessments WHERE quote_id=? ORDER BY report_date DESC", quote_id)
     return templates.TemplateResponse(request, "quote.html", {"q": qrow, "art": art, "call": call,
-                                                              "hist": hist, "sections": _sections()})
+                                                              "hist": hist, "sections": _sections(),
+                                                              "check_help": CHECK_HELP})
 
 
 @app.get("/articles", response_class=HTMLResponse)
