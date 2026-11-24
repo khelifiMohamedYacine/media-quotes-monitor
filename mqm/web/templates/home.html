@@ -1,51 +1,165 @@
-{% extends "base.html" %}{% block body %}
-{% if msg %}<div class="msg">{{ msg }}</div>{% endif %}
-{% if job %}<div class="msg">Running now: <b>{{ job }}</b> (see <a href="/logs">logs</a>).</div>{% endif %}
-<div class="grid">
- <div class="card"><h2>Verified quotes</h2><div class="num">{{ quotes.verified or 0 }}</div>
-  <div class="muted small">{{ (quotes.total or 0) - (quotes.verified or 0) }} rejected by deterministic verification</div></div>
- <div class="card"><h2>LLM usage</h2><div class="num">${{ cost.usd }}</div>
-  <div class="muted small">{{ cost.calls }} calls · {{ cost.inp }} input / {{ cost.outp }} output tokens</div></div>
- <div class="card"><h2>Latest reports</h2>
-  {% for r in reports %}<div><a href="/reports/{{ r.report_date }}">{{ r.report_date }}</a>
-  <span class="muted small">({{ (r.stats_json|fromjson).shown }} quotes)</span> · <a class="small" href="/reports/{{ r.report_date }}.md">.md</a></div>
-  {% else %}<div class="muted">None yet</div>{% endfor %}</div>
+{% extends "base.html" %}
+{% from "_macros.html" import badge, access, page_head, quote_card %}
+{% block title %}Overview · Media Quotes Monitor{% endblock %}
+{% block body %}
+{% set n_articles = namespace(v=0) %}{% for src, m in status_table.items() %}{% for st, n in m.items() %}{% set n_articles.v = n_articles.v + n %}{% endfor %}{% endfor %}
+{% set monitored = sources|rejectattr('access', 'equalto', 'detect_only')|list %}
+
+{{ page_head('Overview', 'What media and think tanks are saying about Russia’s war on Ukraine: material quotes, collected daily and checked word-for-word against the original articles.') }}
+
+{% if msg %}<div class="msg" role="status"><span>✓</span><div>{{ msg }}</div></div>{% endif %}
+{% if job %}<div class="msg running" id="job-banner" role="status"><span class="spinner"></span><div>Running now: <b>{{ job }}</b>. This page updates automatically when it finishes · <a href="/logs">view live logs</a></div></div>{% endif %}
+{% if last_job and not last_job.ok and not job %}<div class="msg err" role="alert"><span>!</span><div>Last job <b>{{ last_job.name }}</b> failed: {{ last_job.error }} (see <a href="/logs?level=error">error logs</a>).</div></div>{% endif %}
+
+<div class="figures">
+ <div class="figure"><div class="label">Verified quotes</div><div class="num">{{ quotes.verified or 0 }}</div>
+  <div class="sub">{{ (quotes.total or 0) - (quotes.verified or 0) }} rejected by verification</div></div>
+ <div class="figure"><div class="label">Sources</div><div class="num">{{ sources|length }}</div>
+  <div class="sub">{{ monitored|length }} monitored · {{ sources|length - monitored|length }} inbox only</div></div>
+ <div class="figure"><div class="label">Articles tracked</div><div class="num">{{ n_articles.v }}</div>
+  <div class="sub">about the war, all sources</div></div>
+ <div class="figure"><div class="label">LLM spend</div><div class="num">${{ cost.usd }}</div>
+  <div class="sub">{{ cost.calls }} calls</div></div>
 </div>
 
-<div class="card"><h2>Run</h2>
- <form class="inline" method="post" action="/run/daily"><button>Run daily check + report</button></form>
- <form class="inline" method="post" action="/run/report"><button>Rebuild today's report</button></form>
- <form class="inline" method="post" action="/run/import-inbox"><button>Import ./inbox pages</button></form>
+<section class="section">
+ <div class="section-head"><h2>Latest verified quotes</h2><a class="aside" href="/quotes">All {{ quotes.verified or 0 }} quotes →</a></div>
+ {% if latest %}<div class="quote-grid">{% for q in latest %}{{ quote_card(q, sections) }}{% endfor %}</div>
+ {% else %}<div class="card empty">No verified quotes yet. Add a source or run the daily check to collect the first ones.</div>{% endif %}
+</section>
+
+<div class="grid-2">
+<section class="card" id="add-source">
+ <div class="card-head"><div><div class="kicker">Sources</div><h2>Add a media / think-tank source</h2></div><span class="muted">Takes 5–30 seconds</span></div>
+ {% if err %}<div class="msg err" role="alert"><span>!</span><div>{{ err }}</div></div>{% endif %}
+ <form method="post" action="/run/add-source" id="add-source-form">
+  <div class="form-grid source-form">
+   <div class="field"><label for="src-name">Source name</label>
+    <input id="src-name" name="name" value="{{ form.name }}" placeholder="Name, e.g. Atlantic Council" required maxlength="80" autocomplete="off">
+    <span class="hint">Shown in reports and tables.</span></div>
+   <div class="field"><label for="src-home">Website</label>
+    <input id="src-home" name="homepage" value="{{ form.homepage }}" placeholder="https://www.example.org" required autocomplete="off" inputmode="url">
+    <span class="hint">Homepage, or any section / article link on the site.</span></div>
+   <div class="field"><label for="src-topic">Ukraine topic page <span class="muted">(optional)</span></label>
+    <input id="src-topic" name="topic_url" value="{{ form.topic_url }}" placeholder="optional: Ukraine topic page URL" autocomplete="off" inputmode="url">
+    <span class="hint">A listing of the site’s Ukraine coverage. Helps sites without a feed.</span></div>
+  </div>
+  <div class="form-actions">
+   <button type="submit" id="add-source-btn"{% if job %} disabled title="Wait for the running job to finish"{% endif %}>Build pipeline</button>
+   <span class="examples">Try <button type="button" class="link" data-name="Kyiv Independent" data-home="https://kyivindependent.com">Kyiv Independent</button> or
+    <button type="button" class="link" data-name="Euronews" data-home="https://www.euronews.com">Euronews</button></span>
+  </div>
+ </form>
+ <details class="help"><summary>What happens when I add a source?</summary>
+  <ol>
+   <li>The system reads the site’s <code>robots.txt</code> and looks for a news sitemap or RSS feed (or uses the topic page / link you gave).</li>
+   <li>The source is saved to <code>config/sources.yaml</code> and appears in the Sources table below.</li>
+   <li>A background job collects its articles since {{ default_start }}, keeps only those about the war, and extracts quotes that are verified word-for-word.</li>
+   <li>From then on the daily run checks it automatically. Sites that refuse automated access are added as <span class="badge b-info">Inbox only</span>: save their articles into <code>./inbox</code> and use “Import ./inbox pages”.</li>
+  </ol>
+ </details>
+</section>
+
+<section class="card">
+ <div class="card-head"><div><div class="kicker">Output</div><h2>Daily reports</h2></div><a class="small" href="/reports">All reports →</a></div>
+ {% if reports %}<table><thead><tr><th>Date</th><th class="n">Quotes</th><th></th></tr></thead><tbody>
+ {% for r in reports %}<tr><td><a href="/reports/{{ r.report_date }}">{{ r.report_date }}</a></td>
+  <td class="n">{{ (r.stats_json|fromjson).shown }}</td><td class="n small"><a href="/reports/{{ r.report_date }}.md">Markdown</a></td></tr>{% endfor %}
+ </tbody></table>
+ {% else %}<div class="empty">No reports yet. Run the daily check to create the first one.</div>{% endif %}
+</section>
+</div>
+
+<section class="card">
+ <div class="card-head"><div><div class="kicker">Controls</div><h2>Run the pipeline</h2></div><span class="muted">Jobs run in the background, one at a time</span></div>
+ <div class="toolbar">
+  <form class="inline" method="post" action="/run/daily"><button{% if job %} disabled{% endif %}>Run daily check + report</button></form>
+  <form class="inline" method="post" action="/run/report"><button class="secondary"{% if job %} disabled{% endif %}>Rebuild today’s report</button></form>
+  <form class="inline" method="post" action="/run/import-inbox"><button class="secondary"{% if job %} disabled{% endif %}>Import ./inbox pages</button></form>
+ </div>
  <hr>
- <form method="post" action="/run/backfill">Collect a past period:
-  <input type="date" name="day_from" value="{{ default_start }}"> to <input type="date" name="day_to" value="{{ today }}">
-  <select name="source"><option value="">all sources</option>{% for s in sources %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}</select>
-  <button>Collect</button></form>
- <hr>
- <form method="post" action="/run/add-source">Add a media / think-tank source:
-  <input name="name" placeholder="Name, e.g. Atlantic Council" required>
-  <input name="homepage" placeholder="https://www.example.org" required>
-  <input name="topic_url" placeholder="optional: Ukraine topic page URL" size="32">
-  <button>Build pipeline</button></form>
+ <form method="post" action="/run/backfill">
+  <h3>Collect a past period</h3>
+  <div class="form-grid">
+   <div class="field"><label for="bf-from">From</label><input id="bf-from" type="date" name="day_from" value="{{ default_start }}"></div>
+   <div class="field"><label for="bf-to">To</label><input id="bf-to" type="date" name="day_to" value="{{ today }}"></div>
+   <div class="field"><label for="bf-src">Source</label>
+    <select id="bf-src" name="source"><option value="">all sources</option>{% for s in sources %}<option value="{{ s.id }}">{{ s.name }}</option>{% endfor %}</select></div>
+  </div>
+  <div class="form-actions"><button class="secondary"{% if job %} disabled{% endif %}>Collect</button></div>
+ </form>
+</section>
+
+<section class="section">
+ <div class="section-head"><h2>Sources</h2><span class="aside">{{ sources|length }} registered</span></div>
+ <div class="card tablewrap" style="padding:8px 14px">
+ <table><thead><tr><th style="width:24%">Source</th><th style="width:12%">Status</th><th style="width:26%">How articles are found</th><th>Note</th></tr></thead><tbody>
+ {% for s in sources %}<tr>
+  <td><b>{{ s.name }}</b><div class="small muted">{{ s.domain }}</div></td>
+  <td>{{ access(s) }}{% if s.mandatory %}<div class="pill" style="margin-top:6px">mandatory</div>{% endif %}</td>
+  <td class="methods">{% for d in s.discovery|map(attribute='method')|unique %}<span class="badge b-muted">{{ d|replace('_', ' ') }}</span> {% else %}<span class="small muted">./inbox or licensed feed</span>{% endfor %}</td>
+  <td class="small muted">{{ s.access_note or '' }}</td></tr>{% endfor %}
+ </tbody></table></div>
+</section>
+
+<div class="grid-2">
+<section class="section">
+ <div class="section-head"><h2>Articles by source</h2><a class="aside" href="/articles">Browse articles →</a></div>
+ <div class="card tablewrap" style="padding:8px 14px">
+ {% if status_table %}<table><thead><tr><th>Source</th>{% for st in statuses %}<th class="n">{{ st|replace('_', ' ') }}</th>{% endfor %}</tr></thead><tbody>
+ {% for src, m in status_table.items() %}<tr><td><a href="/articles?source={{ src }}">{{ src }}</a></td>
+ {% for st in statuses %}<td class="n">{% if m.get(st) %}<a href="/articles?source={{ src }}&status={{ st }}">{{ m.get(st) }}</a>{% else %}<span class="muted">–</span>{% endif %}</td>{% endfor %}</tr>{% endfor %}
+ </tbody></table>
+ {% else %}<div class="empty">No articles yet.</div>{% endif %}</div>
+</section>
+<section class="section">
+ <div class="section-head"><h2>Quotes by section</h2><a class="aside" href="/quotes">Browse →</a></div>
+ {% if by_section %}{% set top = by_section[0].n %}
+ {% for r in by_section %}<a class="bar-row" href="/quotes?section={{ r.section_id }}">
+  <span class="bar-label">{{ sections.get(r.section_id, r.section_id) }}</span><span class="bar-n">{{ r.n }}</span>
+  <span class="bar"><span style="width:{{ (100 * r.n / top)|round(1) }}%"></span></span></a>{% endfor %}
+ {% else %}<div class="empty">No verified quotes yet.</div>{% endif %}
+</section>
 </div>
 
-<div class="grid">
-<div class="card tablewrap"><h2>Articles by source and status</h2>
-<table><tr><th>Source</th>{% for st in statuses %}<th>{{ st }}</th>{% endfor %}</tr>
-{% for src, m in status_table.items() %}<tr><td><a href="/articles?source={{ src }}">{{ src }}</a></td>
-{% for st in statuses %}<td><a href="/articles?source={{ src }}&status={{ st }}">{{ m.get(st, '') }}</a></td>{% endfor %}</tr>{% endfor %}
-</table></div>
-<div class="card"><h2>Verified quotes by section</h2><table>
-{% for r in by_section %}<tr><td><a href="/quotes?section={{ r.section_id }}">{{ sections.get(r.section_id, r.section_id) }}</a></td><td>{{ r.n }}</td></tr>{% endfor %}
-</table></div>
-</div>
+<section class="section">
+ <div class="section-head"><h2>Recent runs</h2><a class="aside" href="/logs">All logs →</a></div>
+ <div class="card tablewrap" style="padding:8px 14px">
+ {% if runs %}<table><thead><tr><th>Run</th><th>Kind</th><th>Started (UTC)</th><th>Finished (UTC)</th><th>Status</th></tr></thead><tbody>
+ {% for r in runs %}<tr><td><a href="/logs?run_id={{ r.run_id }}"><code>{{ r.run_id }}</code></a></td><td>{{ r.kind|replace('_', ' ') }}</td>
+  <td class="small nowrap">{{ r.started_at[:19]|replace('T', ' ') }}</td><td class="small nowrap">{{ (r.finished_at or '')[:19]|replace('T', ' ') }}</td>
+  <td>{{ badge(r.status) }}</td></tr>{% endfor %}
+ </tbody></table>
+ {% else %}<div class="empty">No runs yet.</div>{% endif %}</div>
+</section>
 
-<div class="card tablewrap"><h2>Recent runs</h2><table><tr><th>Run</th><th>Kind</th><th>Started</th><th>Finished</th><th>Status</th></tr>
-{% for r in runs %}<tr><td><a href="/logs?run_id={{ r.run_id }}">{{ r.run_id }}</a></td><td>{{ r.kind }}</td><td>{{ r.started_at }}</td><td>{{ r.finished_at or '' }}</td>
-<td class="{{ 'ok' if r.status=='ok' else 'warn' if r.status in ('partial','running') else 'bad' }}">{{ r.status }}</td></tr>{% endfor %}</table></div>
-
-<div class="card tablewrap"><h2>Sources</h2><table><tr><th>Source</th><th>Access</th><th>Discovery</th><th>Note</th></tr>
-{% for s in sources %}<tr><td>{{ s.name }} {% if s.mandatory %}<span class="pill">mandatory</span>{% endif %}</td><td>{{ s.access }}</td>
-<td class="small">{% for d in s.discovery %}{{ d.method }}{% if not loop.last %}, {% endif %}{% else %}inbox / licensed feed{% endfor %}</td>
-<td class="small muted">{{ s.access_note or '' }}</td></tr>{% endfor %}</table></div>
+<script>
+(function () {
+  var form = document.getElementById('add-source-form'), btn = document.getElementById('add-source-btn');
+  document.querySelectorAll('.examples button[data-name]').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var f = form.elements;
+      f['name'].value = b.dataset.name; f['homepage'].value = b.dataset.home; f['topic_url'].value = '';
+      btn.focus();
+    });
+  });
+  form.addEventListener('submit', function () {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner"></span> Checking the site…';
+  });
+  // While a job runs, poll its status and reload when it finishes (not while the user is typing).
+  {% if job %}
+  var typing = function () {
+    return Array.prototype.some.call(document.querySelectorAll('main input'), function (i) {
+      return document.activeElement === i || (i.type !== 'date' && i.value);
+    });
+  };
+  setInterval(function () {
+    fetch('/api/status').then(function (r) { return r.json(); }).then(function (s) {
+      if (!s.job && !typing()) { window.location.href = '/'; }
+    }).catch(function () {});
+  }, 5000);
+  {% endif %}
+})();
+</script>
 {% endblock %}

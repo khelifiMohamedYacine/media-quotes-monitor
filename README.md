@@ -119,11 +119,57 @@ Reuters and does not attempt to get around these controls**. Reuters content ent
 - a `licensed_feed` discovery method in the registry, the plug-in point for Reuters Connect / LSEG
   APIs once the business has a licence.
 
-**Adding a source** (`python -m mqm add-source "Atlantic Council" https://www.atlanticcouncil.org`,
-or the dashboard form) builds a pipeline automatically. It reads the site's robots.txt for news
-sitemaps, finds RSS/Atom `<link>` feeds on the homepage, optionally takes a topic-page URL, sets the
-access mode from robots.txt, writes the entry to `config/sources.yaml`, and backfills from
-1 October 2026.
+## Adding a media / think-tank source
+
+A new source is a **whole website** to monitor, not a single article (single articles go through
+`inbox/`, see above). Add it from the dashboard form (**Overview → Add a media / think-tank source**)
+or the CLI:
+
+```bash
+python -m mqm add-source "Kyiv Independent" https://kyivindependent.com
+python -m mqm add-source "Atlantic Council" https://www.atlanticcouncil.org --topic-url https://www.atlanticcouncil.org/region/ukraine/
+python -m mqm add-source "Euronews" euronews.com --from 2026-11-01      # or --no-backfill
+```
+
+| Field | Required | Notes |
+|---|---|---|
+| Name | yes | Becomes the source id (`Kyiv Independent` → `kyiv_independent`). |
+| Website | yes | Homepage, or any section / article link on the site; `https://` is optional. |
+| Ukraine topic page | no | A listing of the site's Ukraine coverage. Every article on it counts as in scope. |
+
+**What happens** (the registration takes 5–30 seconds and the result is shown immediately):
+
+1. **Validation**, before any network access: name and addresses are checked, and a source whose
+   name, id or domain is already registered is rejected.
+2. **Discovery**, deterministic, in this order: news sitemaps listed in `robots.txt` (only sitemaps
+   whose *path* contains "news", so `euronews.com/sitemap/tags.xml` is not taken for one); RSS/Atom
+   `<link>` feeds on the homepage; the topic page, if given; the pasted link, if it is a section or
+   article page; conventional feed locations (`/feed/`, `/rss.xml`, `/news-sitemap.xml`, …); and
+   finally the homepage itself as a listing. Pages other than the topic page are *untagged*: the
+   relevance rules in `config/domain.yaml` decide which of their articles are about the war.
+3. **Access mode**, from `robots.txt` and the site's response:
+
+   | Outcome | When | Dashboard message |
+   |---|---|---|
+   | `open` | crawling allowed and a way to list articles was found | "Kyiv Independent added. Articles are found through its RSS feed and news sitemap." |
+   | `detect_only`, inbox only | the site refuses automated access (HTTP 401/403 or robots.txt) and has no feed | "Atlantic Council added as an inbox-only source …": saved pages are processed with **Import ./inbox pages**, like Reuters |
+   | rejected | invalid address, unreachable site, topic page that does not exist (404), duplicate | red message explaining why; the form keeps what was typed and nothing is saved |
+
+4. The entry is **appended** to `config/sources.yaml` (existing entries and comments are left
+   untouched) and synced to the `sources` table.
+5. **Backfill** in the background from 1 October 2026: detect → relevance rules → fetch → LLM span
+   selection → verification, exactly as for the built-in sources. The overview shows the running
+   job and refreshes itself when it finishes; a failure is reported on the page, not only in the logs.
+   From then on the daily run includes the source.
+
+**How long it takes.** Each relevant article costs about 1 s to download (polite per-site delay) plus
+one LLM call. News sitemaps cover ~48 h and feeds the latest 20–50 items, so a feed-based source's first
+run is typically 15–60 articles (a few minutes). A topic page is walked back to the start date and can
+be much longer. On free LLM tiers, rate limits are the main factor.
+
+Tried on 24 November 2026: Kyiv Independent (news sitemap + RSS, 44 of 48 recent articles on the war)
+and Euronews (news sitemap, 14 of 128) are added as `open`; Atlantic Council and the Institute for the
+Study of War answer HTTP 403 to automated clients and are added as inbox-only.
 
 ## Database and LLM-ready storage
 
@@ -147,9 +193,15 @@ Exports for LLM contextualisation (`python -m mqm export`, also from the dashboa
 
 `python -m mqm serve`, then open http://127.0.0.1:8000
 
-- **Overview:** verified/rejected counts, LLM spend, articles by source and status, recent runs, sources.
+- **Overview:** key figures (verified quotes, sources, articles, LLM spend), sources with their
+  status (monitored / inbox only), articles by source and status, quotes by section, recent runs.
+  While a job runs, a banner shows it and the page refreshes itself when it finishes; a failed job
+  is reported with its error.
+- **Add a source:** labelled form with one-click examples and a "What happens when I add a source?"
+  explainer. Errors appear next to the form and keep what was typed (see
+  [Adding a media / think-tank source](#adding-a-media--think-tank-source)).
 - **Run controls:** daily check + report; rebuild report; **collect any past period** (for example
-  2026-08-01 to 2026-09-30, per source or all); **add a new source**; import the inbox.
+  2026-08-01 to 2026-09-30, per source or all); import the inbox. Buttons are disabled while a job runs.
 - **Reports:** every daily Markdown file, rendered or as a download, with its SHA-256.
 - **Quotes:** search and filter. Each quote page shows all verification checks, its provenance
   (snapshot, LLM call, run) and its history across reports.
@@ -166,9 +218,19 @@ python -m mqm backfill --from 2026-10-01              # initial collection from 
 python -m mqm daily                                   # daily: detect + extract + report + export
 python -m mqm report --date 2026-11-18                # rebuild a given day's report
 python -m mqm backfill --from 2026-08-01 --to 2026-09-30   # optional past period on request
+python -m mqm add-source "Kyiv Independent" https://kyivindependent.com   # add a source
 python -m mqm serve                                   # dashboard
 pytest -q                                             # offline tests with a scripted LLM
 ```
+
+On Windows, if `python` is not on the PATH, use the launcher instead: `py -m mqm serve`, `py -m pytest -q`.
+
+**Tests** run offline (no network, no API key). `tests/test_pipeline.py` covers extraction,
+verification, relevance rules and the report with a scripted LLM. `tests/test_add_source.py` covers
+adding a source against a simulated website: feed detection, validation and duplicates, inbox-only
+registration, sitemap-index limits, the dashboard form (success, errors, refilled fields, job status),
+and a render check of every page. Tests write only to temporary folders: the add-source tests use a
+temporary copy of `config/`, so the real `sources.yaml` is never modified.
 
 **Daily schedule.** The daily run looks back 2 days, so a missed day heals itself.
 - Windows: `schtasks /Create /SC DAILY /ST 07:00 /TN mqm-daily /TR "C:\path\.venv\Scripts\python.exe -m mqm daily"`

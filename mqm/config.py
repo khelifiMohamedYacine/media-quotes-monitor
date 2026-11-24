@@ -86,7 +86,21 @@ def save_sources_config(sources: list[dict]) -> None:
     text = path.read_text(encoding="utf-8")
     header = text.split("sources:", 1)[0]
     body = yaml.safe_dump({"sources": sources}, sort_keys=False, allow_unicode=True, width=120)
-    path.write_text(header + body, encoding="utf-8")
+    path.write_text(header + body, encoding="utf-8", newline="\n")
+
+
+def append_source_config(entry: dict) -> None:
+    """Append one source to config/sources.yaml without rewriting the rest of the file,
+    so hand-written comments and formatting of the existing entries are preserved."""
+    path = CONFIG_DIR / "sources.yaml"
+    text = path.read_text(encoding="utf-8")
+    block = yaml.safe_dump([entry], sort_keys=False, allow_unicode=True, width=120)
+    block = "".join("  " + line if line.strip() else line for line in block.splitlines(keepends=True))
+    with path.open("a", encoding="utf-8", newline="\n") as f:
+        f.write(("" if text.endswith("\n") else "\n") + "\n" + block)
+    if _yaml("sources.yaml")["sources"][-1] != entry:      # never leave a corrupted registry behind
+        path.write_text(text, encoding="utf-8", newline="\n")
+        raise ValueError("could not save the new source to config/sources.yaml")
 
 
 def get_source(source_id: str) -> dict:

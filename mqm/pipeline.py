@@ -8,7 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from . import discovery, fetch, relevance
-from .config import DEFAULT_START, INBOX_DIR, get_source, save_sources_config, sources_config
+from .config import DEFAULT_START, INBOX_DIR, append_source_config, get_source, sources_config
 from .db import dumps, init_db, one, rows, session
 from .extract import Article, blocks_from_json, extract
 from .llm import LLM, LLMError, default_llm
@@ -265,26 +265,123 @@ def add_source(name: str, homepage: str, topic_url: str | None = None, backfill_
                llm: LLM | None = None, run_backfill: bool = True) -> dict:
     """Build a pipeline for a new media / think-tank source automatically:
     robots.txt + feed autodetection -> registry entry -> backfill from `backfill_from`."""
-    p = urlparse(homepage if "://" in homepage else f"https://{homepage}")
-    domain = (p.netloc or p.path).lower().removeprefix("www.")
-    sid = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
-    if any(s["id"] == sid for s in sources_config()):
-        raise ValueError(f"source {sid} already exists")
-    disc = discovery.autodetect_feeds(f"https://{p.netloc or p.path}")
-    if topic_url:
-        disc.append({"method": "topic_pages", "url": topic_url, "max_pages": 40})
-    if not disc:
-        raise ValueError(f"no news sitemap or RSS feed found for {domain}; pass --topic-url "
-                         "(a listing page of the source's Russia/Ukraine coverage)")
-    home_allowed = fetch.robots_allows(f"https://{p.netloc or p.path}/")
-    entry = {"id": sid, "name": name, "domain": domain, "access": "open" if home_allowed else "detect_only",
-             "mandatory": False, "discovery": disc, "url_include": [f"^https://([a-z0-9-]+\\.)?{re.escape(domain)}/"],
-             "url_exclude": ["/video/", "/videos/", "/live/", "/gallery/", "/podcast", "/tag/", "/author/"]}
-    srcs = sources_config()
-    srcs.append(entry)
-    save_sources_config(srcs)
-    log("add_source", source=sid, discovery=disc, access=entry["access"])
+    entry = register_source(name, homepage, topic_url)
     result = {"source": entry}
     if run_backfill:
-        result["backfill"] = collect(date.fromisoformat(backfill_from), date.today(), [sid], "add_source", llm)
+        result["backfill"] = backfill_source(entry["id"], backfill_from, llm)
     return result
+
+
+def backfill_source(source_id: str, backfill_from: str = DEFAULT_START, llm: LLM | None = None) -> dict:
+    return collect(date.fromisoformat(backfill_from), date.today(), [source_id], "add_source", llm)
+
+
+_HOST_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$")
+
+
+def _site_url(url: str | None, what: str) -> tuple[str, str]:
+    """Normalise a user-typed web address. Returns (full https/http URL, lower-case host)."""
+    typed = url = (url or "").strip()
+    if not url:
+        raise ValueError(f"{what} is required")
+    if "://" not in url:
+        url = f"https://{url}"
+    try:
+        p = urlparse(url)
+        host = (p.hostname or "").lower()
+    except ValueError:
+        p, host = None, ""
+    if p is None or p.scheme.lower() not in ("http", "https") or not _HOST_RE.match(host):
+        raise ValueError(f"{what} is not a valid web address: {typed!r} (expected e.g. https://www.example.org)")
+    return url, host
+
+
+def _blocked(e: "fetch.FetchError") -> bool:
+    """The publisher refuses automated access (as opposed to a typo / dead page / network problem)."""
+    return e.reason == "disallowed by robots.txt" or e.status in (401, 403)
+
+
+def _why(e: "fetch.FetchError") -> str:
+    if e.reason == "disallowed by robots.txt":
+        return "its robots.txt does not allow automated collection"
+    if e.status in (401, 403):
+        return f"the site refuses automated access (HTTP {e.status})"
+    if e.status:
+        return f"the page answered HTTP {e.status}"
+    return f"the site could not be reached ({e.reason})"
+
+
+def register_source(name: str, homepage: str, topic_url: str | None = None) -> dict:
+    """Validate the input, work out how to list the source's articles and add it to
+    config/sources.yaml (no backfill). Raises ValueError with a human-readable message when the
+    source cannot be added.
+
+    Discovery, in order: news sitemaps in robots.txt, RSS/Atom <link>s on the homepage, the topic page
+    the user gave (an editorial Ukraine tag), the page pasted as homepage if it is a section/article
+    link, conventional feed paths, and finally the homepage itself as an article listing. Pages that
+    are not a topic page are 'untagged': the deterministic relevance rules decide what is in scope.
+    A publisher that refuses automated access is registered as inbox-only (like Reuters)."""
+    name = (name or "").strip()
+    if not name:
+        raise ValueError("source name is required")
+    sid = re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+    if not sid:
+        raise ValueError(f"source name {name!r} must contain at least one Latin letter or digit")
+    home_url, host = _site_url(homepage, "homepage")
+    domain = host.removeprefix("www.")
+    if (topic_url or "").strip():
+        topic_url, topic_host = _site_url(topic_url, "topic page URL")
+        if topic_host.removeprefix("www.") != domain and not topic_host.endswith("." + domain):
+            raise ValueError(f"the topic page URL must be on the same site as the homepage ({domain})")
+    else:
+        topic_url = None
+    pasted = home_url if urlparse(home_url).path.strip("/") and home_url != topic_url else None
+
+    for s in sources_config():
+        if s["id"] == sid or str(s.get("name", "")).strip().lower() == name.lower():
+            raise ValueError(f"a source named {s['name']!r} (id {s['id']!r}) already exists")
+        if str(s.get("domain", "")).lower().removeprefix("www.") == domain:
+            raise ValueError(f"{domain} is already registered as {s['name']!r}")
+
+    home_allowed = fetch.robots_allows(f"https://{host}/")
+    disc = discovery.autodetect_feeds(f"https://{host}", probe_common=not (topic_url or pasted))
+    listings = []
+    if topic_url:
+        listings.append({"method": "topic_pages", "url": topic_url, "max_pages": 40})
+    if pasted:
+        listings.append({"method": "topic_pages", "url": pasted, "max_pages": 3, "tagged": False})
+    if not disc and not listings:
+        listings.append({"method": "topic_pages", "url": f"https://{host}/", "max_pages": 1, "tagged": False})
+    errors: list[fetch.FetchError] = []
+    for lst in listings:                     # keep only listing pages we are allowed to and can read
+        try:
+            fetch.get(lst["url"])
+        except fetch.FetchError as e:
+            log("add_source.listing_unreadable", "warning", url=lst["url"], error=str(e))
+            if lst["url"] == topic_url and not _blocked(e):
+                raise ValueError(f"cannot read the topic page {topic_url}: {_why(e)}") from None
+            errors.append(e)
+            continue
+        disc.append(lst)
+
+    note = None
+    if disc:
+        access = "open" if home_allowed else "detect_only"
+    elif errors and all(_blocked(e) for e in errors):
+        access, note = "detect_only", (
+            f"{domain}: {_why(errors[0])}, and it publishes no feed or news sitemap, so nothing is crawled. "
+            "Articles are processed from pages a reader saves into ./inbox ('Import ./inbox pages').")
+    elif errors:
+        raise ValueError(f"cannot read {errors[0].url}: {_why(errors[0])}. Check the address")
+    else:
+        raise ValueError(f"could not find any way to list articles on {domain}")
+
+    entry = {"id": sid, "name": name, "domain": domain, "access": access, "mandatory": False}
+    if note:
+        entry["access_note"] = note
+    entry |= {"discovery": disc, "url_include": [rf"^https://([a-z0-9-]+\.)?{re.escape(domain)}/"],
+              "url_exclude": ["/video/", "/videos/", "/live/", "/gallery/", "/podcast", "/tag/", "/author/"]}
+    append_source_config(entry)
+    sync_sources()
+    log("add_source", source=sid, discovery=disc, access=access)
+    return entry

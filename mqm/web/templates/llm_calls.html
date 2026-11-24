@@ -1,5 +1,11 @@
-{% extends "base.html" %}{% block body %}<div class="card tablewrap"><h1>LLM calls</h1><table>
-<tr><th>#</th><th>Time</th><th>Purpose</th><th>Model / effort</th><th>In</th><th>Out</th><th>Cache read</th><th>Cost</th><th>Stop</th><th>Error</th></tr>
-{% for c in calls %}<tr><td>{{ c.id }}</td><td class="small">{{ c.created_at }}</td><td>{{ c.purpose }}</td><td class="small">{{ c.model }} / {{ c.effort }}</td>
-<td>{{ c.input_tokens }}</td><td>{{ c.output_tokens }}</td><td>{{ c.cache_read_tokens }}</td><td>${{ c.cost_usd }}</td><td>{{ c.stop_reason or '' }}</td><td class="bad small">{{ c.error or '' }}</td></tr>{% endfor %}
-</table></div>{% endblock %}
+{% extends "base.html" %}
+{% from "_macros.html" import page_head %}
+{% block title %}LLM calls · Media Quotes Monitor{% endblock %}
+{% block body %}
+{{ page_head('LLM calls', 'Every model call with its purpose, token usage and cost (latest 300).') }}
+<div class="card tablewrap">{% if calls %}<table>
+<thead><tr><th class="n">#</th><th>Time (UTC)</th><th>Purpose</th><th>Model / effort</th><th class="n">In</th><th class="n">Out</th><th class="n">Cache read</th><th class="n">Cost</th><th>Stop</th><th>Error</th></tr></thead><tbody>
+{% for c in calls %}<tr><td class="n">{{ c.id }}</td><td class="small nowrap">{{ (c.created_at or '')[:19]|replace('T', ' ') }}</td><td>{{ c.purpose|replace('_', ' ') }}</td><td class="small">{{ c.model }} / {{ c.effort }}</td>
+<td class="n">{{ c.input_tokens }}</td><td class="n">{{ c.output_tokens }}</td><td class="n">{{ c.cache_read_tokens }}</td><td class="n">${{ c.cost_usd }}</td><td class="small">{{ c.stop_reason or '' }}</td><td class="bad small">{{ c.error or '' }}</td></tr>{% endfor %}
+</tbody></table>{% else %}<div class="empty">No LLM calls yet.</div>{% endif %}</div>
+{% endblock %}

@@ -1,8 +1,17 @@
-{% extends "base.html" %}{% block body %}<div class="card"><h1>Logs</h1><form method="get">
-<input type="date" name="day" value="{{ f.day }}"><select name="level"><option value="">all levels</option>
-{% for l in ['info','warning','error'] %}<option {{ 'selected' if f.level==l }}>{{ l }}</option>{% endfor %}</select>
-<input name="run_id" value="{{ f.run_id }}" placeholder="run id"><button>Filter</button></form></div>
-<div class="card tablewrap"><table><tr><th>Time (UTC)</th><th>Level</th><th>Event</th><th>Details</th></tr>
-{% for r in recs %}<tr><td class="small">{{ r.ts }}</td><td class="{{ 'bad' if r.level=='error' else 'warn' if r.level=='warning' else 'muted' }}">{{ r.level }}</td>
-<td>{{ r.event }}</td><td class="small"><code>{% for k,v in r.items() if k not in ('ts','level','event') %}{{ k }}={{ v }} {% endfor %}</code></td></tr>{% endfor %}
-</table></div>{% endblock %}
+{% extends "base.html" %}
+{% from "_macros.html" import page_head %}
+{% block title %}Logs · Media Quotes Monitor{% endblock %}
+{% block body %}
+{{ page_head('Logs', 'Append-only event log: every fetch, LLM call and pipeline step, tagged with its run.') }}
+<div class="card"><form method="get" class="toolbar">
+<input type="date" name="day" value="{{ f.day }}" aria-label="Day">
+<select name="level" aria-label="Level"><option value="">All levels</option>
+{% for l in ['info','warning','error'] %}<option value="{{ l }}" {{ 'selected' if f.level==l }}>{{ l|capitalize }}</option>{% endfor %}</select>
+<input name="run_id" value="{{ f.run_id }}" placeholder="Run id" aria-label="Run id"><button>Filter</button>
+{% if f.day or f.level or f.run_id %}<a class="small" href="/logs">Clear filters</a>{% endif %}</form></div>
+<div class="card tablewrap">{% if recs %}<table><thead><tr><th>Time (UTC)</th><th>Level</th><th>Event</th><th>Details</th></tr></thead><tbody>
+{% for r in recs %}<tr><td class="small nowrap">{{ r.ts[:19]|replace('T', ' ') }}</td>
+<td><span class="badge {{ 'b-bad' if r.level=='error' else 'b-warn' if r.level=='warning' else 'b-muted' }}">{{ r.level }}</span></td>
+<td class="nowrap">{{ r.event }}</td><td class="small"><code>{% for k,v in r.items() if k not in ('ts','level','event') %}{{ k }}={{ v }} {% endfor %}</code></td></tr>{% endfor %}
+</tbody></table>{% else %}<div class="empty">No log entries for these filters.</div>{% endif %}</div>
+{% endblock %}

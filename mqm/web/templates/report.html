@@ -1,2 +1,7 @@
-{% extends "base.html" %}{% block body %}<div class="card report">
-<p class="small"><a href="/reports/{{ day }}.md">Download Markdown</a></p>{{ body|safe }}</div>{% endblock %}
+{% extends "base.html" %}
+{% block title %}Report {{ day }} · Media Quotes Monitor{% endblock %}
+{% block body %}
+<div class="toolbar" style="margin-bottom:16px"><a href="/reports">← All reports</a><span style="margin-left:auto"></span>
+<a class="btn secondary" href="/reports/{{ day }}.md">Download Markdown</a></div>
+<div class="card report">{{ body|safe }}</div>
+{% endblock %}

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from datetime import date
 
 from . import export, pipeline, report
@@ -33,7 +34,9 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("export", help="write quotes.jsonl and context_pack.md")
     sub.add_parser("audit", help="re-verify all quotes against stored snapshots")
     s = sub.add_parser("serve", help="run the dashboard")
-    s.add_argument("--port", type=int, default=8000)
+    # Hosting platforms (e.g. Render) set PORT and need the server to listen on all interfaces.
+    s.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8000")))
+    s.add_argument("--host", default=os.environ.get("MQM_HOST", "0.0.0.0" if "PORT" in os.environ else "127.0.0.1"))
     args = p.parse_args(argv)
 
     if args.cmd == "init":
@@ -61,7 +64,7 @@ def main(argv: list[str] | None = None) -> None:
         out = export.audit_integrity()
     elif args.cmd == "serve":
         import uvicorn
-        uvicorn.run("mqm.web.app:app", host="127.0.0.1", port=args.port)
+        uvicorn.run("mqm.web.app:app", host=args.host, port=args.port)
         return
     print(json.dumps(out, indent=2, default=str, ensure_ascii=False))
 

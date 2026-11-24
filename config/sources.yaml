@@ -11,8 +11,11 @@
 # discovery methods (all deterministic):
 #   news_sitemap      - Google News sitemap (<news:title>, <news:publication_date>) for the last ~48h
 #   topic_pages       - a topic/tag listing page, paginated; every article on it is in scope by tag
+#                       (tagged: false = a generic listing page; the relevance rules decide instead)
 #   rss               - RSS/Atom feed
 #   licensed_feed     - plug-in point for a licensed publisher feed/API (e.g. Reuters Connect)
+#
+# Sources added from the dashboard or `add-source` are appended to the end of this file.
 
 sources:
   - id: bbc

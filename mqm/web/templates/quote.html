@@ -1,27 +1,54 @@
-{% extends "base.html" %}{% block body %}<div class="card"><h1>{{ q.quote_id }}</h1>
-<blockquote>{{ q.quote_text }}</blockquote>
-<table>
-<tr><th>Source</th><td>{{ q.source_name }} ({{ q.source_id }})</td></tr>
-<tr><th>Article</th><td><a href="{{ q.article_url }}" target="_blank" rel="noopener">{{ q.article_name }}</a></td></tr>
-<tr><th>Published</th><td>{{ q.publication_date }}</td></tr><tr><th>Extracted</th><td>{{ q.extraction_date }}</td></tr>
-<tr><th>Speaker</th><td>{{ q.speaker or '-' }}</td></tr><tr><th>Type</th><td>{{ q.quote_type }}</td></tr>
-<tr><th>Section</th><td>{{ sections.get(q.section_id, q.section_id) }}</td></tr>
-<tr><th>Sentence span</th><td>{{ q.span_start }} → {{ q.span_end }}</td></tr>
-<tr><th>Topic key</th><td>{{ q.topic_key }}</td></tr>
-<tr><th>Key facts (LLM paraphrase)</th><td>{% for k in q.key_facts_json|fromjson %}• {{ k }}<br>{% endfor %}</td></tr>
-<tr><th>Why material (LLM)</th><td>{{ q.relevance_rationale }}</td></tr>
-<tr><th>Text SHA-256</th><td class="small">{{ q.text_sha256 }}</td></tr>
-<tr><th>Run</th><td><a href="/logs?run_id={{ q.run_id }}">{{ q.run_id }}</a></td></tr>
-</table></div>
-<div class="card"><h2>Deterministic verification</h2>{% set v = q.verification_json|fromjson %}
-<p class="{{ 'ok' if v.passed else 'bad' }}"><b>{{ 'PASSED' if v.passed else 'FAILED' }}</b></p>
-<table>{% for k, ok in v.checks.items() %}<tr><td>{{ k }}</td><td class="{{ 'ok' if ok else 'bad' }}">{{ 'yes' if ok else 'no' }}</td></tr>{% endfor %}</table></div>
-<div class="card"><h2>Provenance</h2><table>
-<tr><th>Article status</th><td>{{ art.status }}</td></tr><tr><th>Discovered by</th><td>{{ art.discovery_method }} ({{ art.relevance_rule }})</td></tr>
-<tr><th>Fetched</th><td>{{ art.fetched_at }}</td></tr><tr><th>Raw HTML snapshot</th><td class="small">data/snapshots/{{ art.snapshot_sha256 }}.html.gz</td></tr>
-{% if call %}<tr><th>LLM call</th><td>#{{ call.id }} · {{ call.model }} · effort {{ call.effort }} · {{ call.input_tokens }}/{{ call.output_tokens }} tokens · ${{ call.cost_usd }}</td></tr>{% endif %}
-</table></div>
-<div class="card"><h2>Report history</h2><table><tr><th>Report</th><th>Status</th><th>Superseded by</th><th>Reason (LLM)</th></tr>
-{% for h in hist %}<tr><td>{{ h.report_date }}</td><td>{{ h.status }}</td><td>{% if h.superseded_by %}<a href="/quotes/{{ h.superseded_by }}">{{ h.superseded_by }}</a>{% endif %}</td><td>{{ h.reason }}</td></tr>
-{% else %}<tr><td colspan="4" class="muted">Not yet in a report.</td></tr>{% endfor %}</table></div>
+{% extends "base.html" %}
+{% from "_macros.html" import badge %}
+{% block title %}Quote {{ q.quote_id }} · Media Quotes Monitor{% endblock %}
+{% block body %}
+{% set v = q.verification_json|fromjson %}
+<p class="small" style="margin:0 0 18px"><a href="/quotes">← All quotes</a></p>
+
+<article class="qcard feature" style="padding:40px 44px 26px;margin-bottom:32px">
+ <div class="kicker">{{ sections.get(q.section_id, q.section_id) }}</div>
+ <p class="qtext" style="font-size:24px">{{ q.quote_text }}</p>
+ <div class="attrib">{% if q.speaker %}<span class="speaker">{{ q.speaker }}</span>{% endif %}<cite>{{ q.source_name }}</cite><span class="muted">· {{ q.publication_date[:10] }}</span></div>
+ <div class="headline"><a href="{{ q.article_url }}" target="_blank" rel="noopener">{{ q.article_name }} ↗</a></div>
+ <div class="meta">{% if v.passed %}<span class="seal">Verified verbatim</span>{% else %}<span class="seal failed">Failed verification</span>{% endif %}
+  <span class="badge b-muted">{{ q.quote_type|replace('_', ' ') }}</span><span class="spacer"></span><code>{{ q.quote_id }}</code></div>
+</article>
+
+<div class="grid-2">
+<section class="section">
+ <div class="section-head"><h2>Record</h2></div>
+ <div class="card" style="padding:8px 14px"><table class="kv"><tbody>
+ <tr><th>Source</th><td>{{ q.source_name }} <span class="muted">({{ q.source_id }})</span></td></tr>
+ <tr><th>Published</th><td>{{ q.publication_date }}</td></tr><tr><th>Extracted</th><td>{{ q.extraction_date }}</td></tr>
+ <tr><th>Speaker</th><td>{{ q.speaker or '–' }}</td></tr>
+ <tr><th>Sentence span</th><td><code>{{ q.span_start }} → {{ q.span_end }}</code></td></tr>
+ <tr><th>Topic key</th><td><code>{{ q.topic_key }}</code></td></tr>
+ <tr><th>Key facts</th><td>{% for k in q.key_facts_json|fromjson %}<div>• {{ k }}</div>{% endfor %}<div class="small muted">LLM paraphrase</div></td></tr>
+ <tr><th>Why material</th><td>{{ q.relevance_rationale }}<div class="small muted">LLM rationale</div></td></tr>
+ <tr><th>Text SHA-256</th><td class="small"><code>{{ q.text_sha256 }}</code></td></tr>
+ <tr><th>Run</th><td><a href="/logs?run_id={{ q.run_id }}"><code>{{ q.run_id }}</code></a></td></tr>
+ </tbody></table></div>
+</section>
+<div>
+<section class="section">
+ <div class="section-head"><h2>Verification</h2><span class="aside">deterministic, no LLM</span></div>
+ <div class="card" style="padding:8px 14px"><table class="kv"><tbody>{% for k, ok in v.checks.items() %}<tr><td>{{ k|replace('_', ' ')|capitalize }}</td><td class="n">{% if ok %}<span class="badge b-ok">pass</span>{% else %}<span class="badge b-bad">fail</span>{% endif %}</td></tr>{% endfor %}</tbody></table></div>
+</section>
+<section class="section">
+ <div class="section-head"><h2>Provenance</h2></div>
+ <div class="card" style="padding:8px 14px"><table class="kv"><tbody>
+ <tr><th>Article</th><td>{{ badge(art.status) }}</td></tr><tr><th>Found by</th><td>{{ art.discovery_method|replace('_', ' ') }} <span class="muted small">· {{ art.relevance_rule|rule_label }}</span></td></tr>
+ <tr><th>Fetched</th><td>{{ art.fetched_at }}</td></tr><tr><th>Snapshot</th><td class="small"><code>data/snapshots/{{ art.snapshot_sha256 }}.html.gz</code></td></tr>
+ {% if call %}<tr><th>LLM call</th><td>#{{ call.id }} · {{ call.model }} · effort {{ call.effort }} · {{ call.input_tokens }}/{{ call.output_tokens }} tokens · ${{ call.cost_usd }}</td></tr>{% endif %}
+ </tbody></table></div>
+</section>
+</div>
+</div>
+
+<section class="section">
+ <div class="section-head"><h2>Report history</h2></div>
+ <div class="card tablewrap" style="padding:8px 14px"><table><thead><tr><th>Report</th><th>Status</th><th>Superseded by</th><th>Reason (LLM)</th></tr></thead><tbody>
+ {% for h in hist %}<tr><td>{{ h.report_date }}</td><td>{{ badge(h.status) }}</td><td>{% if h.superseded_by %}<a href="/quotes/{{ h.superseded_by }}">{{ h.superseded_by }}</a>{% endif %}</td><td>{{ h.reason }}</td></tr>
+ {% else %}<tr><td colspan="4" class="empty">Not yet in a report.</td></tr>{% endfor %}</tbody></table></div>
+</section>
 {% endblock %}

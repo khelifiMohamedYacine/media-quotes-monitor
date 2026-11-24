@@ -54,15 +54,23 @@ def _xml(text: str) -> etree._Element:
     return etree.fromstring(text.encode("utf-8"), parser=etree.XMLParser(recover=True, huge_tree=True))
 
 
-def news_sitemap(url: str) -> Iterator[Candidate]:
-    """Google-News sitemap or sitemap index of them. Gives title + publication date per URL."""
+MAX_CHILD_SITEMAPS = 10
+
+
+def news_sitemap(url: str, max_children: int = MAX_CHILD_SITEMAPS) -> Iterator[Candidate]:
+    """Google-News sitemap or sitemap index of them. Gives title + publication date per URL.
+    Only the first `max_children` sitemaps of an index are read (news sitemaps cover ~48h; a huge
+    index means it is not really a news sitemap and would take far too long to crawl)."""
     root = _xml(fetch.get(url).text)
     if root.tag.endswith("sitemapindex"):
-        for loc in root.findall("sm:sitemap/sm:loc", NS):
+        locs = [loc.text.strip() for loc in root.findall("sm:sitemap/sm:loc", NS) if loc.text]
+        if len(locs) > max_children:
+            log("discovery.sitemap_index_capped", "warning", url=url, children=len(locs), read=max_children)
+        for loc in locs[:max_children]:
             try:
-                yield from news_sitemap(loc.text.strip())
+                yield from news_sitemap(loc, max_children)
             except fetch.FetchError as e:
-                log("discovery.error", "warning", url=loc.text, error=str(e))
+                log("discovery.error", "warning", url=loc, error=str(e))
         return
     for u in root.findall("sm:url", NS):
         loc = u.findtext("sm:loc", default="", namespaces=NS).strip()
@@ -113,8 +121,9 @@ def page_median_date(text: str) -> str | None:
 
 
 def topic_pages(url: str, max_pages: int, page_param: str = "page",
-                url_filter=None, older_than: str | None = None) -> Iterator[Candidate]:
-    """Walk a paginated topic page; every article listed is in scope by editorial tag.
+                url_filter=None, older_than: str | None = None, tagged: bool = True) -> Iterator[Candidate]:
+    """Walk a paginated topic page; every article listed is in scope by editorial tag
+    (unless tagged=False: a generic listing such as a homepage, where the relevance rules decide).
     Stops when a page's median date is older than `older_than` (the period start)."""
     seen: set[str] = set()
     for page in range(1, max_pages + 1):
@@ -133,7 +142,7 @@ def topic_pages(url: str, max_pages: int, page_param: str = "page",
                 continue
             seen.add(href)
             title = " ".join(a.text_content().split())
-            found.append(Candidate(url=href, title=title[:300], method="topic_pages", tagged=True))
+            found.append(Candidate(url=href, title=title[:300], method="topic_pages", tagged=tagged))
         log("discovery.topic_page", url=page_url, new_links=len(found), median_date=median)
         if not found:
             break
@@ -162,7 +171,7 @@ def discover(source: dict, day_from: date, day_to: date) -> list[Candidate]:
             elif m == "topic_pages":
                 # walk until the listing is older than the period start (or max_pages)
                 it = topic_pages(d["url"], d.get("max_pages", 60), d.get("page_param", "page"),
-                                 url_filter=url_ok, older_than=start)
+                                 url_filter=url_ok, older_than=start, tagged=d.get("tagged", True))
             elif m == "licensed_feed":
                 # Plug-in point for a licensed publisher API (e.g. Reuters Connect / LSEG).
                 log("discovery.licensed_feed_not_configured", "warning", source=source["id"])
@@ -192,8 +201,31 @@ def discover(source: dict, day_from: date, day_to: date) -> list[Candidate]:
     return list(merged.values())
 
 
-def autodetect_feeds(homepage: str) -> list[dict]:
-    """For a new source: read robots.txt sitemaps and <link rel=alternate> RSS feeds."""
+COMMON_FEED_PATHS = ("/news-sitemap.xml", "/sitemap-news.xml", "/sitemap_news.xml", "/feed/", "/rss",
+                     "/rss.xml", "/feed.xml", "/atom.xml")
+
+
+def _feed_kind(text: str) -> str | None:
+    """'news_sitemap' / 'rss' if the document really is one, else None."""
+    try:
+        root = _xml(text)
+    except etree.XMLSyntaxError:
+        return None
+    if root is None:
+        return None
+    tag = root.tag if isinstance(root.tag, str) else ""
+    if tag.endswith("rss") or tag.endswith("}feed") or tag == "feed" or tag.endswith("RDF"):
+        return "rss"
+    if tag.endswith("urlset") and root.find(".//news:news", NS) is not None:
+        return "news_sitemap"
+    if tag.endswith("sitemapindex"):
+        return "news_sitemap"
+    return None
+
+
+def autodetect_feeds(homepage: str, probe_common: bool = True) -> list[dict]:
+    """For a new source: news sitemaps listed in robots.txt, <link rel=alternate> RSS/Atom feeds on
+    the homepage and, if neither is advertised, a few conventional feed locations."""
     p = urlparse(homepage if "://" in homepage else f"https://{homepage}")
     base = f"https://{p.netloc or p.path}"
     found: list[dict] = []
@@ -202,14 +234,28 @@ def autodetect_feeds(homepage: str) -> list[dict]:
         for line in robots.splitlines():
             if line.lower().startswith("sitemap:"):
                 sm = line.split(":", 1)[1].strip()
-                if "news" in sm.lower():
+                # look at the path only: "news" in the domain (euronews.com, skynews.com) proves nothing
+                if "news" in urlparse(sm).path.lower():
                     found.append({"method": "news_sitemap", "url": sm})
     except fetch.FetchError as e:
         log("add_source.robots_error", "warning", base=base, error=str(e))
     try:
         doc = html.fromstring(fetch.get(base).text)
         for link in doc.xpath("//link[@rel='alternate'][contains(@type,'rss') or contains(@type,'atom')]"):
-            found.append({"method": "rss", "url": urljoin(base, link.get("href"))})
-    except fetch.FetchError as e:
+            href = (link.get("href") or "").strip()
+            if href:
+                found.append({"method": "rss", "url": urljoin(base + "/", href)})
+    except (fetch.FetchError, etree.ParserError) as e:
         log("add_source.home_error", "warning", base=base, error=str(e))
-    return found
+    if not found and probe_common:
+        for path in COMMON_FEED_PATHS:
+            try:
+                r = fetch.get(base + path)
+            except fetch.FetchError:
+                continue
+            kind = _feed_kind(r.text)
+            if kind:
+                found.append({"method": kind, "url": base + path})
+                log("add_source.feed_probe_hit", base=base, path=path, kind=kind)
+    seen: set[str] = set()
+    return [d for d in found if not (d["url"] in seen or seen.add(d["url"]))]

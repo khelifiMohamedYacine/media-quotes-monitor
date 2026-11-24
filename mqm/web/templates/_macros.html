@@ -1,0 +1,32 @@
+{% macro badge(status) -%}
+{%- set good = ['ok', 'extracted', 'open', 'current', 'passed'] -%}
+{%- set busy = ['running', 'partial', 'detected', 'pending'] -%}
+{%- set bad = ['failed', 'error'] -%}
+{%- set info = ['detect_only', 'access_restricted', 'superseded'] -%}
+<span class="badge {{ 'b-ok' if status in good else 'b-warn' if status in busy else 'b-bad' if status in bad else 'b-info' if status in info else 'b-muted' }}">{{ status|replace('_', ' ') }}</span>
+{%- endmacro %}
+
+{% macro access(s) -%}
+{%- if s.access == 'detect_only' -%}<span class="badge b-info" title="Not crawled: articles come from ./inbox">Inbox only</span>
+{%- else -%}<span class="badge b-ok" title="Crawled automatically">Monitored</span>{%- endif -%}
+{%- endmacro %}
+
+{% macro page_head(title, subtitle='', kicker='') -%}
+<div class="page-head">{% if kicker %}<div class="kicker">{{ kicker }}</div>{% endif %}<h1>{{ title }}</h1>{% if subtitle %}<p>{{ subtitle }}</p>{% endif %}</div>
+{%- endmacro %}
+
+{% macro quote_card(q, sections, feature=False) -%}
+<article class="qcard{{ ' feature' if feature }}">
+ <div class="kicker">{{ sections.get(q.section_id, q.section_id) }}</div>
+ <p class="qtext{{ '' if feature else ' clamp' }}">{{ q.quote_text }}</p>
+ {% if not feature %}<a class="readmore" href="/quotes/{{ q.quote_id }}" hidden>Read full quote →</a>{% endif %}
+ {% if q.speaker %}<div class="speaker">{{ q.speaker }}</div>{% endif %}
+ <div class="qfoot">
+  <div class="attrib"><cite>{{ q.source_name }}</cite><span class="muted">· {{ q.publication_date[:10] }}</span></div>
+  <div class="headline"><a href="{{ q.article_url }}" target="_blank" rel="noopener" title="{{ q.article_name }}">{{ q.article_name }} ↗</a></div>
+  <div class="meta">{% if q.verified %}<span class="seal">Verified verbatim</span>{% else %}<span class="seal failed">Failed verification</span>{% endif %}
+   <span class="badge b-muted">{{ q.quote_type|replace('_', ' ') }}</span><span class="spacer"></span>
+   <a href="/quotes/{{ q.quote_id }}">Provenance →</a></div>
+ </div>
+</article>
+{%- endmacro %}

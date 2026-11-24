@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import re
 import threading
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlencode
 
 import markdown
 from fastapi import FastAPI, Form, HTTPException, Request
@@ -19,8 +21,32 @@ from ..logs import log, read_logs
 app = FastAPI(title="Media Quotes Monitor")
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 templates.env.filters["fromjson"] = json.loads
+
+
+def _rule_label(rule: str | None) -> str:
+    r"""Human-readable form of a relevance rule id, e.g. 'core:\bukrain' -> 'keyword "ukrain"'."""
+    if not rule:
+        return ""
+
+    def clean(pattern: str) -> str:   # drop regex syntax: \b, \w, anchors, groups, quantifiers
+        return re.sub(r"\\[bBwWsSdD]|[\^$()?*+\[\]{}|\\]", "", pattern).strip()
+
+    if rule == "topic_tag":
+        return "listed on the site's Ukraine topic page"
+    if rule == "manual_import":
+        return "imported from ./inbox"
+    if rule.startswith("core:"):
+        return f'keyword "{clean(rule[5:])}"'
+    if rule.startswith("russia+context:"):
+        ru, _, ctx = rule[15:].partition("&")
+        return f'keywords "{clean(ru)}" + "{clean(ctx)}"'
+    return rule
+
+
+templates.env.filters["rule_label"] = _rule_label
+templates.env.globals["today_label"] = lambda: f"{date.today():%A}, {date.today().day} {date.today():%B %Y}"
 _job_lock = threading.Lock()
-_job: dict = {"name": None}
+_job: dict = {"name": None, "last": None}
 
 
 def _run_job(name: str, fn, *args, **kwargs) -> bool:
@@ -31,9 +57,13 @@ def _run_job(name: str, fn, *args, **kwargs) -> bool:
 
     def target():
         try:
-            fn(*args, **kwargs)
+            out = fn(*args, **kwargs)
+            failed = isinstance(out, dict) and out.get("status") == "failed"
+            _job["last"] = {"name": name, "ok": not failed,
+                            "error": out.get("error", "") if failed else ""}
         except Exception as e:  # noqa: BLE001
             log("dashboard.job_failed", "error", job=name, error=str(e))
+            _job["last"] = {"name": name, "ok": False, "error": str(e)}
         finally:
             _job["name"] = None
             _job_lock.release()
@@ -53,7 +83,7 @@ def _sections() -> dict[str, str]:
 
 
 @app.get("/", response_class=HTMLResponse)
-def home(request: Request, msg: str = ""):
+def home(request: Request, msg: str = "", err: str = "", name: str = "", homepage: str = "", topic_url: str = ""):
     with session() as c:
         by_status = rows(c, "SELECT source_id, status, COUNT(*) n FROM articles GROUP BY 1,2 ORDER BY 1,2")
         quotes = one(c, "SELECT COUNT(*) total, SUM(verified) verified FROM quotes")
@@ -62,14 +92,17 @@ def home(request: Request, msg: str = ""):
         cost = one(c, "SELECT COUNT(*) calls, ROUND(COALESCE(SUM(cost_usd),0),3) usd, "
                       "COALESCE(SUM(input_tokens),0) inp, COALESCE(SUM(output_tokens),0) outp FROM llm_calls")
         reports = rows(c, "SELECT * FROM reports ORDER BY report_date DESC LIMIT 7")
+        latest = rows(c, "SELECT * FROM quotes WHERE verified=1 ORDER BY publication_date DESC, extraction_date DESC "
+                         "LIMIT 6")
     status_table: dict[str, dict[str, int]] = {}
     for r in by_status:
         status_table.setdefault(r["source_id"], {})[r["status"]] = r["n"]
     statuses = sorted({r["status"] for r in by_status})
     return templates.TemplateResponse(request, "home.html", {
         "status_table": status_table, "statuses": statuses, "quotes": quotes, "by_section": by_section,
-        "sections": _sections(), "runs": runs, "cost": cost, "reports": reports, "sources": sources_config(),
-        "job": _job["name"], "msg": msg, "default_start": DEFAULT_START, "today": date.today().isoformat()})
+        "sections": _sections(), "runs": runs, "cost": cost, "reports": reports, "latest": latest, "sources": sources_config(),
+        "job": _job["name"], "last_job": _job["last"], "msg": msg, "err": err,
+        "form": {"name": name, "homepage": homepage, "topic_url": topic_url}, "default_start": DEFAULT_START, "today": date.today().isoformat()})
 
 
 # ------------------------------------------------------------------ actions
@@ -103,8 +136,40 @@ def run_backfill(day_from: str = Form(...), day_to: str = Form(...), source: str
 
 @app.post("/run/add-source")
 def run_add_source(name: str = Form(...), homepage: str = Form(...), topic_url: str = Form("")):
-    ok = _run_job(f"add source {name}", pipeline.add_source, name, homepage, topic_url or None)
-    return RedirectResponse(f"/?msg={'Source pipeline being built' if ok else 'A job is already running'}", 303)
+    # Register synchronously so validation / feed-detection errors are shown to the user,
+    # then backfill in the background (that part can take a long time).
+    if _job["name"]:
+        return RedirectResponse(f"/?{urlencode({'err': 'A job is already running; try again when it finishes'})}",
+                                303)
+    try:
+        entry = pipeline.register_source(name, homepage, topic_url or None)
+    except ValueError as e:
+        log("dashboard.add_source_rejected", "warning", name=name, homepage=homepage, error=str(e))
+        keep = {"name": name, "homepage": homepage, "topic_url": topic_url}   # refill the form
+        return RedirectResponse(f"/?{urlencode({'err': f'Could not add source: {e}', **keep})}#add-source", 303)
+    return RedirectResponse(f"/?{urlencode({'msg': _added_message(entry)})}", 303)
+
+
+_METHOD_NAMES = {"news_sitemap": "news sitemap", "rss": "RSS feed", "topic_pages": "topic page"}
+
+
+def _added_message(entry: dict) -> str:
+    """Plain-language confirmation for a newly registered source; starts its backfill when useful."""
+    name = entry["name"]
+    if not entry["discovery"]:
+        # Publisher refuses automated access and has no feed: nothing to crawl, so no backfill.
+        return (f"{name} added as an inbox-only source: the site refuses automated access, so it is not "
+                "crawled. Save its articles into ./inbox and click “Import ./inbox pages” to extract quotes.")
+    found = sorted({_METHOD_NAMES.get(d["method"], d["method"]) for d in entry["discovery"]})
+    msg = f"{name} added. Articles are found through its {' and '.join(found)}."
+    if entry["access"] == "detect_only":
+        msg += " Its robots.txt does not allow crawling, so new articles are listed but not downloaded."
+    if _run_job(f"backfill new source {name}", pipeline.backfill_source, entry["id"]):
+        msg += (f" Collecting its articles since {DEFAULT_START} in the background; quotes appear on the "
+                "Quotes page as each article is processed.")
+    else:
+        msg += " Another job is running, so collection has not started yet: use “Collect a past period” later."
+    return msg
 
 
 @app.post("/run/import-inbox")
@@ -239,6 +304,12 @@ def api_audit():
 @app.get("/download/db")
 def download_db():
     return FileResponse(DB_PATH, media_type="application/x-sqlite3", filename="quotes.db")
+
+
+@app.get("/api/status")
+def api_status():
+    """Background job state, polled by the dashboard to refresh itself when a job finishes."""
+    return JSONResponse({"job": _job["name"], "last": _job["last"]})
 
 
 @app.get("/health", response_class=PlainTextResponse)
